@@ -80,11 +80,12 @@ if [ "$(id -u)" = 0 ]; then
     echo "== CLI validation (root) =="
     out=$(bash install.sh --adapter 2>&1);      check "--adapter without value dies" 1 $? "$out" "needs a number"
     out=$(bash install.sh not-an-ip 2>&1);      check "garbage arg rejected"         1 $? "$out" "Not an IP address"
-    if [ ! -f /etc/systemd/system/btproxy-server.service ]; then
+    if [ ! -f /etc/systemd/system/btproxy-server.service ] && [ ! -f /etc/systemd/system/btproxy-client.service ]; then
         out=$(bash install.sh --pause 2>&1);    check "--pause with nothing installed dies" 1 $? "$out" "Nothing is shared"
         out=$(bash install.sh --resume 2>&1);   check "--resume with nothing installed dies" 1 $? "$out" "Nothing to resume"
+        out=$(bash install.sh --status 2>&1);   check "--status with nothing installed dies" 1 $? "$out" "Nothing installed"
     else
-        echo "  skip: pause/resume checks (a real btproxy-server is installed here)"
+        echo "  skip: pause/resume/status checks (a real bridge is installed here)"
     fi
 else
     echo "== CLI validation skipped (needs root) =="

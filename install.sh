@@ -9,6 +9,7 @@
 #   ./install.sh --adapter 1        # host: share a specific chip (multiple chips)
 #   ./install.sh <host-ip>          # inside a VM: connect to this host
 #   ./install.sh --check            # is my Bluetooth chip healthy? (lists all chips)
+#   ./install.sh --status           # is the bridge working? (either side)
 #   ./install.sh --pause            # host: take Bluetooth back temporarily
 #   ./install.sh --resume           # host: share it with the VM again
 #   ./install.sh --uninstall        # undo everything, restore normal Bluetooth
@@ -188,9 +189,12 @@ EOF
     sleep 2
     systemctl restart bluetooth 2>/dev/null || warn "bluetooth.service not found; is bluez installed?"
     sleep 2
-    if bluetoothctl show 2>/dev/null | grep -q "Powered: yes"; then
+    local bt_show bt_list
+    bt_show=$(bluetoothctl show 2>/dev/null || true)
+    bt_list=$(bluetoothctl list 2>/dev/null || true)
+    if grep -q "Powered: yes" <<< "$bt_show"; then
         say "Done. This VM now has working Bluetooth. Go pair your controller."
-    elif bluetoothctl list 2>/dev/null | grep -q Controller; then
+    elif grep -q Controller <<< "$bt_list"; then
         bluetoothctl power on >/dev/null 2>&1 || true
         say "Done. Adapter is up. Go pair your controller."
     else
@@ -214,6 +218,51 @@ support_note() {
     https://ko-fi.com/lucidfabrics
     https://buymeacoffee.com/lucidfabrics
 EOF
+}
+
+status() {
+    local any=0 rc=0
+    if [ -f /etc/systemd/system/btproxy-server.service ]; then
+        any=1
+        say "This machine SHARES its Bluetooth (server side)"
+        if systemctl is-active --quiet btproxy-server; then
+            echo "    [ok] btproxy-server running"
+            local lp
+            lp=$(ss -tln 2>/dev/null | grep ":$PORT " | awk '{print $4}' | head -1)
+            if [ -n "$lp" ]; then echo "    [ok] listening on $lp"; else echo "    [!!] not listening on port $PORT"; rc=1; fi
+            local est; est=$(ss -tn 2>/dev/null || true)
+            if grep -q ":$PORT " <<< "$est"; then
+                echo "    [ok] a VM is connected"
+            else
+                echo "    [--] no VM connected right now (client off or still retrying)"
+            fi
+        elif systemctl is-enabled --quiet btproxy-server 2>/dev/null; then
+            echo "    [--] paused (resume with: $0 --resume)"
+        else
+            echo "    [!!] btproxy-server not running - journalctl -u btproxy-server"; rc=1
+        fi
+    fi
+    if [ -f /etc/systemd/system/btproxy-client.service ]; then
+        any=1
+        say "This machine USES a shared Bluetooth chip (VM side)"
+        if systemctl is-active --quiet btproxy-client; then
+            echo "    [ok] btproxy-client running"
+        else
+            echo "    [!!] btproxy-client not running - journalctl -u btproxy-client"; rc=1
+        fi
+        local bt_show bt_list
+        bt_show=$(bluetoothctl show 2>/dev/null || true)
+        bt_list=$(bluetoothctl list 2>/dev/null || true)
+        if grep -q "Powered: yes" <<< "$bt_show"; then
+            echo "    [ok] adapter present and powered - Bluetooth is usable"
+        elif grep -q Controller <<< "$bt_list"; then
+            echo "    [!!] adapter present but not powered - try: bluetoothctl power on"; rc=1
+        else
+            echo "    [!!] no adapter yet - server unreachable or paused (retrying every 3s)"; rc=1
+        fi
+    fi
+    [ "$any" = 1 ] || die "Nothing installed on this machine (run the install first)."
+    return $rc
 }
 
 pause() {
@@ -273,6 +322,7 @@ set -- "${ARGS[@]:-}"
 
 case "${1:-}" in
     --check)     check ;;
+    --status)    status ;;
     --pause)     pause ;;
     --resume)    resume ;;
     --uninstall) uninstall ;;
