@@ -15,7 +15,6 @@ set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main"
 PORT=9700
-BIN=/usr/local/bin/btproxy
 ADAPTER=""
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
@@ -24,16 +23,44 @@ die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || exec sudo -E bash "$0" "$@"
 
+# /usr/local is read-only on immutable guests (ChimeraOS, Bazzite) - fall back
+# to /var, which stays writable and survives their OS updates.
+if mkdir -p /usr/local/bin 2>/dev/null && touch /usr/local/bin/.pbt-w 2>/dev/null; then
+    rm -f /usr/local/bin/.pbt-w
+    BIN=/usr/local/bin/btproxy
+else
+    mkdir -p /var/lib/proxmox-bluetooth
+    BIN=/var/lib/proxmox-bluetooth/btproxy
+fi
+
 get_binary() {
-    [ -x "$BIN" ] && return 0
-    local here; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
-    if [ -f "$here/bin/btproxy-x86_64" ]; then
-        install -m755 "$here/bin/btproxy-x86_64" "$BIN"
-    else
-        say "Downloading btproxy..."
-        curl -fsSL "$REPO_RAW/bin/btproxy-x86_64" -o "$BIN" || die "Download failed. No internet?"
-        chmod 755 "$BIN"
+    if [ ! -x "$BIN" ]; then
+        local here; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+        if [ -f "$here/bin/btproxy-x86_64" ]; then
+            install -m755 "$here/bin/btproxy-x86_64" "$BIN"
+        else
+            say "Downloading btproxy..."
+            curl -fsSL "$REPO_RAW/bin/btproxy-x86_64" -o "$BIN" || die "Download failed. No internet?"
+            chmod 755 "$BIN"
+        fi
     fi
+    # btproxy (a bluez test tool) leaks its session on abnormal peer hangup;
+    # the next connection then gets "resource busy" forever. This wrapper exits
+    # on those symptoms so systemd (Restart=always) restarts it with a clean
+    # session - proven necessary on the first real VM reboot.
+    cat > "$BIN-run" << EOF
+#!/bin/bash
+$BIN "\$@" 2>&1 | while IFS= read -r line; do
+    echo "\$line"
+    case "\$line" in
+        *"Remote hangup"*|*"Error from host"*|*"resource busy"*|*"No controller available"*)
+            pkill -P \$\$ btproxy 2>/dev/null
+            exit 1 ;;
+    esac
+done
+exit 1
+EOF
+    chmod 755 "$BIN-run"
 }
 
 # Prints "idx mac bus" for every adapter found, one per line. Returns 1 if none.
@@ -124,7 +151,7 @@ Wants=network-online.target
 [Service]
 ExecStartPre=-/bin/systemctl stop bluetooth
 ExecStartPre=-/usr/bin/hciconfig hci$ADAPTER down
-ExecStart=$BIN -i $ADAPTER -l$ip -p $PORT
+ExecStart=$BIN-run -i $ADAPTER -l$ip -p $PORT
 Restart=always
 RestartSec=3
 
@@ -157,7 +184,7 @@ Wants=network-online.target
 Before=bluetooth.service
 
 [Service]
-ExecStart=$BIN -c $host_ip -p $PORT
+ExecStart=$BIN-run -c $host_ip -p $PORT
 Restart=always
 RestartSec=3
 
@@ -204,7 +231,8 @@ uninstall() {
     systemctl disable --now btproxy-client 2>/dev/null || true
     rm -f /etc/systemd/system/btproxy-server.service /etc/systemd/system/btproxy-client.service
     rm -f /etc/systemd/system/bluetooth.service.d/proxmox-bluetooth.conf
-    rm -f "$BIN"
+    rm -f /usr/local/bin/btproxy /usr/local/bin/btproxy-run
+    rm -rf /var/lib/proxmox-bluetooth
     systemctl daemon-reload
     systemctl enable --now bluetooth 2>/dev/null || true
     say "Removed. Normal Bluetooth restored on this machine."
