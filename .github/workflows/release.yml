@@ -24,7 +24,11 @@ jobs:
       - name: Get current version
         id: current
         run: |
-          VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0")
+          if TAG=$(git describe --tags --abbrev=0 2>/dev/null); then
+            VERSION="${TAG#v}"
+          else
+            VERSION="0.0.0"
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Determine version bump from commits

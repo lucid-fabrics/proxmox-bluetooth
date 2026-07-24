@@ -175,8 +175,20 @@ EOF
 }
 
 support_note() {
-    echo "  If this saved you a headache: https://github.com/sponsors/lucid-fabrics"
-    echo "  (or https://ko-fi.com/lucidfabrics / https://buymeacoffee.com/lucidfabrics)"
+    cat << 'EOF'
+
+        ( (
+         ) )
+      .........
+      |       |]
+      \       /
+       `-----'
+
+  If this saved you a headache, a coffee keeps it maintained:
+    https://github.com/sponsors/lucid-fabrics
+    https://ko-fi.com/lucidfabrics
+    https://buymeacoffee.com/lucidfabrics
+EOF
 }
 
 uninstall() {
