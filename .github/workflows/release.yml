@@ -153,6 +153,7 @@ jobs:
         run: |
           gh release create "v${{ steps.version.outputs.new }}" \
             --title "v${{ steps.version.outputs.new }}" \
-            --notes-file "${{ steps.notes.outputs.notes_file }}"
+            --notes-file "${{ steps.notes.outputs.notes_file }}" \
+            bin/btproxy-x86_64 bin/btproxy-x86_64.sha256
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
