@@ -5,16 +5,18 @@
 #   inside a VM         -> connects to the shared chip
 #
 # Usage:
-#   ./install.sh                 # auto mode (host = share, VM = connect)
-#   ./install.sh <host-ip>       # inside a VM: connect to this host
-#   ./install.sh --check         # is my Bluetooth chip healthy?
-#   ./install.sh --uninstall     # undo everything, restore normal Bluetooth
+#   ./install.sh                    # auto mode (host = share, VM = connect)
+#   ./install.sh --adapter 1        # host: share a specific chip (multiple chips)
+#   ./install.sh <host-ip>          # inside a VM: connect to this host
+#   ./install.sh --check            # is my Bluetooth chip healthy? (lists all chips)
+#   ./install.sh --uninstall        # undo everything, restore normal Bluetooth
 
 set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main"
 PORT=9700
 BIN=/usr/local/bin/btproxy
+ADAPTER=""
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*"; }
@@ -34,40 +36,87 @@ get_binary() {
     fi
 }
 
+# Prints "idx mac bus" for every adapter found, one per line. Returns 1 if none.
+list_adapters() {
+    local found=1
+    for d in /sys/class/bluetooth/hci*; do
+        [ -e "$d" ] || continue
+        found=0
+        local name=${d##*/} mac bus
+        mac=$(cat "$d/address" 2>/dev/null || true)
+        [ -z "$mac" ] && mac=$(hciconfig "$name" 2>/dev/null | grep -oE '([0-9A-F]{2}:){5}[0-9A-F]{2}' | head -1 || true)
+        [ -z "$mac" ] && mac="address unavailable (adapter busy)"
+        case "$(readlink -f "$d")" in
+            *usb*) bus="USB" ;;
+            *uart*|*serial*) bus="onboard" ;;
+            *) bus="other" ;;
+        esac
+        echo "${name#hci} $mac $bus"
+    done
+    return $found
+}
+
+print_adapter_table() {
+    say "Bluetooth adapters on this machine:"
+    list_adapters | while read -r idx mac bus; do
+        printf '    [%s] hci%s - %s (%s)\n' "$idx" "$idx" "$mac" "$bus"
+    done
+}
+
 check() {
-    local hci
-    hci=$(ls /sys/class/bluetooth 2>/dev/null | head -1) || true
-    if [ -z "${hci:-}" ]; then
+    if ! list_adapters >/dev/null; then
         warn "No Bluetooth adapter found on this machine."
         echo "   If you just installed a card: check dmesg | grep -i bluetooth"
         echo "   If it is an Intel card acting dead: power the machine fully OFF"
         echo "   at the power supply switch for 15 seconds. Yes, really. See README."
         exit 1
     fi
-    if dmesg | grep -qE "hci0.*(command .* tx timeout|failed \(-110\))"; then
-        warn "Adapter '$hci' found but it is NOT responding (stuck in bootloader)."
-        echo "   Fix: shut down, flip the power supply switch OFF for 15 seconds, boot."
-        echo "   A reboot or the front power button is NOT enough. See README."
-        exit 1
+    print_adapter_table
+    local bad=0
+    while read -r idx mac bus; do
+        if dmesg | grep -qE "hci$idx.*(command .* tx timeout|failed \(-110\))"; then
+            warn "hci$idx ($mac) is NOT responding (stuck in bootloader)."
+            echo "   Fix: shut down, flip the power supply switch OFF for 15 seconds, boot."
+            echo "   A reboot or the front power button is NOT enough. See README."
+            bad=1
+        fi
+    done < <(list_adapters)
+    [ "$bad" = 0 ] && say "All adapters healthy. You are good to go."
+    local count; count=$(list_adapters | wc -l)
+    if [ "$count" -gt 1 ]; then
+        echo
+        say "More than one adapter found - when sharing, pick one:"
+        echo "    ./install.sh --adapter <number>"
     fi
-    say "Adapter '$hci' found and healthy. You are good to go."
+    [ "$bad" = 0 ]
 }
 
 server() {
     get_binary
+    list_adapters >/dev/null || die "No Bluetooth adapter found on this machine."
+    local count; count=$(list_adapters | wc -l)
+    if [ -z "$ADAPTER" ]; then
+        if [ "$count" -gt 1 ]; then
+            print_adapter_table
+            die "Multiple adapters found. Re-run with: $0 --adapter <number>"
+        fi
+        ADAPTER=$(list_adapters | awk '{print $1}')
+    else
+        list_adapters | awk '{print $1}' | grep -qx "$ADAPTER" || die "No adapter hci$ADAPTER on this machine."
+    fi
     local ip
     ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src") print $(i+1); exit}')
     [ -n "$ip" ] || die "Could not detect this machine's IP."
     cat > /etc/systemd/system/btproxy-server.service <<EOF
 [Unit]
-Description=Share this machine's Bluetooth chip with VMs (proxmox-bluetooth)
+Description=Share this machine's Bluetooth chip (hci$ADAPTER) with VMs (proxmox-bluetooth)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 ExecStartPre=-/bin/systemctl stop bluetooth
-ExecStartPre=-/usr/bin/hciconfig hci0 down
-ExecStart=$BIN -i 0 -l$ip -p $PORT
+ExecStartPre=-/usr/bin/hciconfig hci$ADAPTER down
+ExecStart=$BIN -i $ADAPTER -l$ip -p $PORT
 Restart=always
 RestartSec=3
 
@@ -79,7 +128,7 @@ EOF
     systemctl enable --now btproxy-server
     sleep 1
     systemctl is-active --quiet btproxy-server || die "Server failed to start. Run: journalctl -u btproxy-server"
-    say "Bluetooth is now shared on $ip:$PORT."
+    say "Bluetooth (hci$ADAPTER) is now shared on $ip:$PORT."
     echo
     echo "  Now run this INSIDE your VM:"
     echo
@@ -132,6 +181,16 @@ uninstall() {
     systemctl enable --now bluetooth 2>/dev/null || true
     say "Removed. Normal Bluetooth restored on this machine."
 }
+
+# --- argument parsing ---
+ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --adapter) ADAPTER="$2"; shift 2 ;;
+        *) ARGS+=("$1"); shift ;;
+    esac
+done
+set -- "${ARGS[@]:-}"
 
 case "${1:-}" in
     --check)     check ;;
