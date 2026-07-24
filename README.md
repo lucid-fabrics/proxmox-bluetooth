@@ -1,4 +1,4 @@
-# Bluetooth in your Proxmox VMs. Finally.
+# Bluetooth in your Proxmox Linux VMs. Finally.
 
 Pair your Xbox / PlayStation controller, headphones, or sensors **inside** your gaming VM
 (ChimeraOS, Bazzite, Home Assistant, plain Linux) - even with Bluetooth chips that
