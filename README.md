@@ -5,7 +5,7 @@ Pair your Xbox / PlayStation controller, headphones, or sensors **inside** your 
 "can't be passed through".
 
 <p align="center">
-  <img src="docs/img/controller-connected.png" alt="Xbox controller finally connected in Steam" width="600">
+  <img src="docs/img/controller-connected.jpg" alt="Xbox controller finally connected in Steam" width="600">
 </p>
 
 ## Sound familiar?
