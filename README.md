@@ -35,6 +35,10 @@ lower than the controller's own radio delay - you will never feel it.
 
 ### Two commands. That's all.
 
+<p align="center">
+  <img src="docs/img/demo.gif" alt="Real install: host shares the chip, VM gets working Bluetooth" width="700">
+</p>
+
 On the **Proxmox host**:
 
 ```bash

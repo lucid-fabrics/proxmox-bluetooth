@@ -342,10 +342,11 @@ case "${1:-}" in
     --resume)    resume ;;
     --uninstall) uninstall ;;
     "")
-        if [ "$(systemd-detect-virt 2>/dev/null || echo none)" = "none" ]; then
-            check; server
-        else
+        # systemd-detect-virt exits 0 only when virtualization is detected
+        if systemd-detect-virt --quiet 2>/dev/null; then
             die "This looks like a VM. Run the command printed by the host install, or: $0 <host-ip>"
+        else
+            check; server
         fi ;;
     *)
         [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Not an IP address: $1"

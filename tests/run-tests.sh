@@ -86,6 +86,9 @@ if [ "$(id -u)" = 0 ]; then
     echo "== CLI validation (root) =="
     out=$(bash install.sh --adapter 2>&1);      check "--adapter without value dies" 1 $? "$out" "needs a number"
     out=$(bash install.sh not-an-ip 2>&1);      check "garbage arg rejected"         1 $? "$out" "Not an IP address"
+    if systemd-detect-virt --quiet 2>/dev/null; then
+        out=$(bash install.sh 2>&1);            check "auto mode on a VM refuses to act as host" 1 $? "$out" "looks like a VM"
+    fi
     if [ ! -f /etc/systemd/system/btproxy-server.service ] && [ ! -f /etc/systemd/system/btproxy-client.service ]; then
         out=$(bash install.sh --pause 2>&1);    check "--pause with nothing installed dies" 1 $? "$out" "Nothing is shared"
         out=$(bash install.sh --resume 2>&1);   check "--resume with nothing installed dies" 1 $? "$out" "Nothing to resume"
