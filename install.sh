@@ -23,18 +23,6 @@ say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
-[ "$(id -u)" = 0 ] || exec sudo -E bash "$0" "$@"
-
-# /usr/local is read-only on immutable guests (ChimeraOS, Bazzite) - fall back
-# to /var, which stays writable and survives their OS updates.
-if mkdir -p /usr/local/bin 2>/dev/null && touch /usr/local/bin/.pbt-w 2>/dev/null; then
-    rm -f /usr/local/bin/.pbt-w
-    BIN=/usr/local/bin/btproxy
-else
-    mkdir -p /var/lib/proxmox-bluetooth
-    BIN=/var/lib/proxmox-bluetooth/btproxy
-fi
-
 get_binary() {
     if [ ! -x "$BIN" ]; then
         local here; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
@@ -68,7 +56,7 @@ EOF
 # Prints "idx mac bus" for every adapter found, one per line. Returns 1 if none.
 list_adapters() {
     local found=1
-    for d in /sys/class/bluetooth/hci*; do
+    for d in "${PBT_SYS_BT:-/sys/class/bluetooth}"/hci*; do
         [ -e "$d" ] || continue
         found=0
         local name=${d##*/} mac bus
@@ -257,6 +245,21 @@ uninstall() {
     systemctl enable --now bluetooth 2>/dev/null || true
     say "Removed. Normal Bluetooth restored on this machine."
 }
+
+# Test seam: `PBT_SOURCED=1 source install.sh` loads the functions and stops here.
+if [ "${PBT_SOURCED:-0}" = 1 ]; then return 0; fi
+
+[ "$(id -u)" = 0 ] || exec sudo -E bash "$0" "$@"
+
+# /usr/local is read-only on immutable guests (ChimeraOS, Bazzite) - fall back
+# to /var, which stays writable and survives their OS updates.
+if mkdir -p /usr/local/bin 2>/dev/null && touch /usr/local/bin/.pbt-w 2>/dev/null; then
+    rm -f /usr/local/bin/.pbt-w
+    BIN=/usr/local/bin/btproxy
+else
+    mkdir -p /var/lib/proxmox-bluetooth
+    BIN=/var/lib/proxmox-bluetooth/btproxy
+fi
 
 # --- argument parsing ---
 ARGS=()

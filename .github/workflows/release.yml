@@ -20,10 +20,8 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Validate script syntax
-        run: |
-          bash -n install.sh
-          bash -n build.sh
+      - name: Run test suite
+        run: sudo bash tests/run-tests.sh
 
       - name: Get current version
         id: current
