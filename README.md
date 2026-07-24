@@ -113,6 +113,12 @@ No. The bridge adds well under a millisecond on the same machine. Bluetooth itse
 **Do I need to buy anything?**
 No. The card you already have works. Even the old one you replaced probably worked.
 
+**My whole VM "died" - black screen, no network (ChimeraOS / Bazzite).**
+It didn't die - it went to sleep. Gaming distros auto-suspend after idle like a
+Steam Deck, and a VM with GPU passthrough never wakes from that. Turn suspend off
+for good inside the VM:
+`sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`
+
 **My controller pairs but nothing responds in Steam (ChimeraOS / Bazzite).**
 Known quirk in their input layer, not in Bluetooth: run
 `sudo systemctl restart inputplumber`, then turn the controller off and on. Fixed.
