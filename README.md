@@ -36,7 +36,25 @@ On the **Proxmox host**:
 curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh | sudo bash
 ```
 
-It prints one line. Paste that line **inside your VM**. Done - go pair your controller.
+You'll see something like this:
+
+```
+==> Bluetooth is now shared on 192.168.1.3:9700.
+
+  Now run this INSIDE your VM:
+
+    curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh | sudo bash -s -- 192.168.1.3
+```
+
+**What to do:** copy that last line exactly (your IP will be different) and run it inside the VM.
+
+Inside the VM, you'll see:
+
+```
+==> Done. This VM now has working Bluetooth. Go pair your controller.
+```
+
+**What to do:** open Bluetooth settings in the VM and pair like normal. That's it.
 
 Both sides auto-start at boot and auto-reconnect. Set it up once, forget it exists.
 
@@ -47,6 +65,25 @@ If your Proxmox host can see it, your VM can have it. Run this on the host:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh | sudo bash -s -- --check
 ```
+
+If it's healthy, you'll see:
+
+```
+==> Adapter 'hci0' found and healthy. You are good to go.
+```
+
+**What to do:** nothing - run the install command above.
+
+If your chip is the stuck-Intel-chip case, you'll see:
+
+```
+!! Adapter 'hci0' found but it is NOT responding (stuck in bootloader).
+   Fix: shut down, flip the power supply switch OFF for 15 seconds, boot.
+   A reboot or the front power button is NOT enough. See README.
+```
+
+**What to do:** exactly what it says. This looks extreme but it's the one thing that
+actually works - see the FAQ below for why.
 
 Confirmed by real people (add yours with a PR):
 
