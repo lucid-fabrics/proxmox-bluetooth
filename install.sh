@@ -74,12 +74,20 @@ check() {
     print_adapter_table
     local bad=0
     while read -r idx mac bus; do
-        if dmesg | grep -qE "hci$idx.*(command .* tx timeout|failed \(-110\))"; then
-            warn "hci$idx ($mac) is NOT responding (stuck in bootloader)."
-            echo "   Fix: shut down, flip the power supply switch OFF for 15 seconds, boot."
-            echo "   A reboot or the front power button is NOT enough. See README."
-            bad=1
-        fi
+        # A real MAC means the chip completed its firmware handshake - it is fine,
+        # even if old failure lines are still sitting in the dmesg ring buffer.
+        case "$mac" in
+            "00:00:00:00:00:00"|"address unavailable"*)
+                if dmesg | grep -qE "hci$idx: (command .* tx timeout|.*failed \(-110\))"; then
+                    warn "hci$idx is NOT responding (stuck in bootloader)."
+                    echo "   Fix: shut down, flip the power supply switch OFF for 15 seconds, boot."
+                    echo "   A reboot or the front power button is NOT enough. See README."
+                    bad=1
+                else
+                    warn "hci$idx exists but its address is unreadable - probably already claimed"
+                    echo "   (e.g. this bridge is already running). Not necessarily a problem."
+                fi ;;
+        esac
     done < <(list_adapters)
     [ "$bad" = 0 ] && say "All adapters healthy. You are good to go."
     local count; count=$(list_adapters | wc -l)
@@ -196,6 +204,7 @@ uninstall() {
     systemctl disable --now btproxy-client 2>/dev/null || true
     rm -f /etc/systemd/system/btproxy-server.service /etc/systemd/system/btproxy-client.service
     rm -f /etc/systemd/system/bluetooth.service.d/proxmox-bluetooth.conf
+    rm -f "$BIN"
     systemctl daemon-reload
     systemctl enable --now bluetooth 2>/dev/null || true
     say "Removed. Normal Bluetooth restored on this machine."
@@ -205,7 +214,7 @@ uninstall() {
 ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
-        --adapter) ADAPTER="$2"; shift 2 ;;
+        --adapter) ADAPTER="${2:-}"; [ -n "$ADAPTER" ] || die "--adapter needs a number (run --check to list adapters)"; shift 2 ;;
         *) ARGS+=("$1"); shift ;;
     esac
 done

@@ -44,7 +44,10 @@ curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/mai
 You'll see something like this:
 
 ```
-==> Bluetooth is now shared on 192.168.1.3:9700.
+==> Bluetooth adapters on this machine:
+    [0] hci0 - 70:08:10:A4:F1:45 (USB)
+==> All adapters healthy. You are good to go.
+==> Bluetooth (hci0) is now shared on 192.168.1.3:9700.
 
   Now run this INSIDE your VM:
 
@@ -74,7 +77,9 @@ curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/mai
 If it's healthy, you'll see:
 
 ```
-==> Adapter 'hci0' found and healthy. You are good to go.
+==> Bluetooth adapters on this machine:
+    [0] hci0 - 70:08:10:A4:F1:45 (USB)
+==> All adapters healthy. You are good to go.
 ```
 
 **What to do:** nothing - run the install command above.
@@ -82,7 +87,7 @@ If it's healthy, you'll see:
 If your chip is the stuck-Intel-chip case, you'll see:
 
 ```
-!! Adapter 'hci0' found but it is NOT responding (stuck in bootloader).
+!! hci0 is NOT responding (stuck in bootloader).
    Fix: shut down, flip the power supply switch OFF for 15 seconds, boot.
    A reboot or the front power button is NOT enough. See README.
 ```
