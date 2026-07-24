@@ -30,6 +30,12 @@ else
     echo "== shellcheck skipped (not installed) =="
 fi
 
+echo "== binary checksum consistency =="
+want=$(cut -d" " -f1 bin/btproxy-x86_64.sha256)
+got=$(sha256sum bin/btproxy-x86_64 2>/dev/null | cut -d" " -f1 || shasum -a 256 bin/btproxy-x86_64 | cut -d" " -f1)
+[ "$want" = "$got" ] && ok "bin/btproxy-x86_64.sha256 matches the committed binary" \
+    || fail "checksum file does not match the binary - regenerate bin/btproxy-x86_64.sha256"
+
 echo "== test seam =="
 out=$(bash -c 'PBT_SOURCED=1 source ./install.sh && declare -F list_adapters get_binary pause resume >/dev/null && echo SEAM_OK' 2>&1)
 check "sourcing loads functions without acting" 0 $? "$out" "SEAM_OK"

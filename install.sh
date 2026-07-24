@@ -24,14 +24,29 @@ say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
+verify_binary() { # verify_binary <file> <sha256-file>
+    local want got
+    want=$(cut -d" " -f1 "$2")
+    got=$(sha256sum "$1" | cut -d" " -f1)
+    [ "$want" = "$got" ] || die "Checksum mismatch for btproxy - corrupted download? Try again."
+}
+
 get_binary() {
     if [ ! -x "$BIN" ]; then
         local here; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
         if [ -f "$here/bin/btproxy-x86_64" ]; then
+            [ -f "$here/bin/btproxy-x86_64.sha256" ] && verify_binary "$here/bin/btproxy-x86_64" "$here/bin/btproxy-x86_64.sha256"
             install -m755 "$here/bin/btproxy-x86_64" "$BIN"
         else
             say "Downloading btproxy..."
             curl -fsSL "$REPO_RAW/bin/btproxy-x86_64" -o "$BIN" || die "Download failed. No internet?"
+            if curl -fsSL "$REPO_RAW/bin/btproxy-x86_64.sha256" -o "$BIN.sha256.tmp" 2>/dev/null; then
+                verify_binary "$BIN" "$BIN.sha256.tmp"
+                rm -f "$BIN.sha256.tmp"
+                say "Checksum verified."
+            else
+                warn "Could not fetch checksum file - skipping verification."
+            fi
             chmod 755 "$BIN"
         fi
     fi
