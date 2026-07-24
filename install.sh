@@ -9,6 +9,8 @@
 #   ./install.sh --adapter 1        # host: share a specific chip (multiple chips)
 #   ./install.sh <host-ip>          # inside a VM: connect to this host
 #   ./install.sh --check            # is my Bluetooth chip healthy? (lists all chips)
+#   ./install.sh --pause            # host: take Bluetooth back temporarily
+#   ./install.sh --resume           # host: share it with the VM again
 #   ./install.sh --uninstall        # undo everything, restore normal Bluetooth
 
 set -euo pipefail
@@ -226,6 +228,24 @@ support_note() {
 EOF
 }
 
+pause() {
+    [ -f /etc/systemd/system/btproxy-server.service ] || die "Nothing is shared from this machine (no btproxy-server installed)."
+    systemctl stop btproxy-server
+    systemctl start bluetooth 2>/dev/null || true
+    say "Sharing paused. This machine owns its Bluetooth again."
+    echo "  The VM will show no adapter until you resume:  $0 --resume"
+    echo "  (A host reboot also resumes sharing automatically.)"
+}
+
+resume() {
+    [ -f /etc/systemd/system/btproxy-server.service ] || die "Nothing to resume (no btproxy-server installed)."
+    systemctl stop bluetooth 2>/dev/null || true
+    systemctl start btproxy-server
+    sleep 1
+    systemctl is-active --quiet btproxy-server || die "Failed to resume. Run: journalctl -u btproxy-server"
+    say "Sharing resumed. The VM reconnects by itself within a few seconds."
+}
+
 uninstall() {
     systemctl disable --now btproxy-server 2>/dev/null || true
     systemctl disable --now btproxy-client 2>/dev/null || true
@@ -250,6 +270,8 @@ set -- "${ARGS[@]:-}"
 
 case "${1:-}" in
     --check)     check ;;
+    --pause)     pause ;;
+    --resume)    resume ;;
     --uninstall) uninstall ;;
     "")
         if [ "$(systemd-detect-virt 2>/dev/null || echo none)" = "none" ]; then
