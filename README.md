@@ -78,6 +78,12 @@ not enough. This one trick cost us a full day - you're welcome.
 **Does the host lose its own Bluetooth?**
 Yes, while sharing. A server in a closet rarely misses it. `--uninstall` gives it back.
 
+**What about Windows VMs?**
+The bridge is for Linux guests (it relies on Linux's Bluetooth stack). Windows VMs
+usually don't have this problem: passing a USB dongle straight through with
+`qm set <vmid> -usb0 host=<id>` just works there. This tool exists because Linux
+guests choke where Windows shrugs.
+
 **Is this Proxmox only?**
 No - any Linux host with KVM VMs (or even two separate machines). Proxmox is just where
 it hurts the most.
