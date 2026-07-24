@@ -1,0 +1,55 @@
+name: Bug Report
+description: Something doesn't work
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The command outputs below answer 90% of questions on the first pass.
+  - type: dropdown
+    id: side
+    attributes:
+      label: Where does it go wrong?
+      options:
+        - On the host (sharing side)
+        - Inside the VM (connecting side)
+        - Pairing works but the device misbehaves
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: chip
+    attributes:
+      label: Bluetooth chip
+      description: From `--check` output, or the card/dongle name
+      placeholder: "Intel BE200"
+    validations:
+      required: true
+  - type: input
+    id: guest-os
+    attributes:
+      label: Guest OS in the VM
+      placeholder: "ChimeraOS 49 / Bazzite / Debian 12"
+    validations:
+      required: true
+  - type: textarea
+    id: check-output
+    attributes:
+      label: Output of --check on the host
+      description: "`curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh | sudo bash -s -- --check`"
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: journal
+    attributes:
+      label: Service logs
+      description: "Host: `journalctl -u btproxy-server -n 30` - VM: `journalctl -u btproxy-client -n 30`"
+      render: shell
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true

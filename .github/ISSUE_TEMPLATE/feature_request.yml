@@ -1,0 +1,23 @@
+name: Feature Request
+description: Suggest an improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation you're in, not just the feature you imagine.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Worked-for-me report instead?
+      description: If you're just here to say your chip works, even better - tell us the chip and guest OS and we'll add it to the compatibility table.
