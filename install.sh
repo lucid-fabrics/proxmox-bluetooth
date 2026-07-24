@@ -134,6 +134,7 @@ EOF
     echo
     echo "    curl -fsSL $REPO_RAW/install.sh | sudo bash -s -- $ip"
     echo
+    support_note
 }
 
 client() {
@@ -170,6 +171,12 @@ EOF
     else
         warn "Connected, but no adapter appeared yet. Check: journalctl -u btproxy-client"
     fi
+    support_note
+}
+
+support_note() {
+    echo "  If this saved you a headache: https://github.com/sponsors/lucid-fabrics"
+    echo "  (or https://ko-fi.com/lucidfabrics / https://buymeacoffee.com/lucidfabrics)"
 }
 
 uninstall() {

@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate script syntax
+        run: |
+          bash -n install.sh
+          bash -n build.sh
+
+      - name: Get current version
+        id: current
+        run: |
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Determine version bump from commits
+        id: bump
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --format="%s" --no-decorate)
+          else
+            COMMITS=$(git log --format="%s" --no-decorate "$PREV_TAG"..HEAD)
+          fi
+
+          BUMP="none"
+          while IFS= read -r msg; do
+            if echo "$msg" | grep -qE '^[a-z]+(\(.+\))?!:' || echo "$msg" | grep -qi 'BREAKING CHANGE'; then
+              BUMP="major"
+              break
+            elif echo "$msg" | grep -qE '^feat(\(.+\))?:'; then
+              BUMP="minor"
+            elif echo "$msg" | grep -qE '^fix(\(.+\))?:' && [ "$BUMP" != "minor" ]; then
+              BUMP="patch"
+            fi
+          done <<< "$COMMITS"
+
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "Detected bump: $BUMP"
+
+      - name: Calculate new version
+        if: steps.bump.outputs.bump != 'none'
+        id: version
+        run: |
+          CURRENT="${{ steps.current.outputs.version }}"
+          BUMP="${{ steps.bump.outputs.bump }}"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW="$MAJOR.$MINOR.$PATCH"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Version: $CURRENT → $NEW ($BUMP)"
+
+      - name: Check if tag already exists
+        if: steps.bump.outputs.bump != 'none'
+        id: check
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.new }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag
+        if: steps.bump.outputs.bump != 'none' && steps.check.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ steps.version.outputs.new }}"
+          git push origin "v${{ steps.version.outputs.new }}"
+
+      - name: Generate release notes
+        if: steps.bump.outputs.bump != 'none' && steps.check.outputs.exists == 'false'
+        id: notes
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            RANGE=""
+          else
+            RANGE="$PREV_TAG..HEAD"
+          fi
+
+          NOTES_FILE="$(mktemp)"
+          echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+
+          {
+            FEATS=$(git log --format="- %s" --no-decorate $RANGE | grep -E '^\- feat' || true)
+            if [ -n "$FEATS" ]; then
+              echo "### Features"
+              echo "$FEATS"
+              echo ""
+            fi
+
+            FIXES=$(git log --format="- %s" --no-decorate $RANGE | grep -E '^\- fix' || true)
+            if [ -n "$FIXES" ]; then
+              echo "### Bug Fixes"
+              echo "$FIXES"
+              echo ""
+            fi
+
+            OTHER=$(git log --format="- %s" --no-decorate $RANGE | grep -vE '^\- (feat|fix)' || true)
+            if [ -n "$OTHER" ]; then
+              echo "### Other Changes"
+              echo "$OTHER"
+              echo ""
+            fi
+
+            if [ -n "$PREV_TAG" ]; then
+              echo "**Full changelog:** https://github.com/${{ github.repository }}/compare/$PREV_TAG...v${{ steps.version.outputs.new }}"
+              echo ""
+            fi
+
+            echo "---"
+            echo ""
+            echo "### Quick Start"
+            echo ""
+            printf '```bash\n'
+            printf 'curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh | sudo bash\n'
+            printf '```\n'
+            echo ""
+            echo "☕ Support: [Ko-fi](https://ko-fi.com/lucidfabrics) | [Buy Me a Coffee](https://buymeacoffee.com/lucidfabrics) | [GitHub Sponsors](https://github.com/sponsors/lucid-fabrics)"
+          } > "$NOTES_FILE"
+
+      - name: Create release
+        if: steps.bump.outputs.bump != 'none' && steps.check.outputs.exists == 'false'
+        run: |
+          gh release create "v${{ steps.version.outputs.new }}" \
+            --title "v${{ steps.version.outputs.new }}" \
+            --notes-file "${{ steps.notes.outputs.notes_file }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

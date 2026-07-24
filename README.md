@@ -1,5 +1,10 @@
 # Bluetooth in your Proxmox Linux VMs. Finally.
 
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-donate-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/lucidfabrics)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-donate-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/lucidfabrics)
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-%E2%9D%A4-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/lucid-fabrics)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Pair your Xbox / PlayStation controller, headphones, or sensors **inside** your gaming VM
 (ChimeraOS, Bazzite, Home Assistant, plain Linux) - even with Bluetooth chips that
 "can't be passed through".
