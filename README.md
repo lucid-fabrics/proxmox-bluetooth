@@ -107,9 +107,9 @@ The bundled binary is built from bluez 5.66 `tools/btproxy` with plain `-O2`
 This fix cost a full day of head-scratching, three "dead" reboots, and one very real walk
 to the power supply switch. If it saved you that day:
 
-- ☕ Ko-fi: *coming soon*
-- ☕ Buy Me a Coffee: *coming soon*
-- 💜 GitHub Sponsors: *coming soon*
+- ☕ [Ko-fi](https://ko-fi.com/lucidfabrics)
+- ☕ [Buy Me a Coffee](https://buymeacoffee.com/lucidfabrics)
+- 💜 [GitHub Sponsors](https://github.com/sponsors/lucid-fabrics)
 
 ## Uninstall
 
