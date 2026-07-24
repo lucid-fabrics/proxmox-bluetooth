@@ -33,7 +33,7 @@ lower than the controller's own radio delay - you will never feel it.
 On the **Proxmox host**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wmehanna/proxmox-bluetooth/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh | sudo bash
 ```
 
 It prints one line. Paste that line **inside your VM**. Done - go pair your controller.
@@ -45,7 +45,7 @@ Both sides auto-start at boot and auto-reconnect. Set it up once, forget it exis
 If your Proxmox host can see it, your VM can have it. Run this on the host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wmehanna/proxmox-bluetooth/main/install.sh | sudo bash -s -- --check
+curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh | sudo bash -s -- --check
 ```
 
 Confirmed by real people (add yours with a PR):

@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/wmehanna/proxmox-bluetooth/main"
+REPO_RAW="https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main"
 PORT=9700
 BIN=/usr/local/bin/btproxy
 
