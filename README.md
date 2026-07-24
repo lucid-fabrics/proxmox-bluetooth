@@ -112,6 +112,13 @@ It is stuck in its blank boot state. Shut the machine down and flip the **power 
 switch off for 15 seconds**, then boot. A reboot is not enough. The front power button is
 not enough. This one trick cost us a full day - you're welcome.
 
+**I have more than one Bluetooth chip on the host.**
+`--check` lists every adapter it finds (`hci0`, `hci1`, ...) with its MAC address so you
+can tell them apart, and if it finds more than one it won't guess - it'll ask you to pick.
+Share a specific one with `./install.sh --adapter 1`. Bridging two chips into two different
+VMs *at the same time* isn't supported yet (one install per host today) - open an issue if
+you need it, it's a small change.
+
 **Does the host lose its own Bluetooth?**
 Yes, while sharing. A server in a closet rarely misses it. `--uninstall` gives it back.
 
@@ -148,11 +155,15 @@ The bundled binary is built from bluez 5.66 `tools/btproxy` with plain `-O2`
 ## Support this project
 
 This fix cost a full day of head-scratching, three "dead" reboots, and one very real walk
-to the power supply switch. If it saved you that day:
+to the power supply switch - so nobody else has to lose that day. Tools like this stay free
+and maintained for exactly one reason: people who were helped choose to help the next person
+in line. If that's you right now, thank you. It genuinely keeps this alive.
 
-- ☕ [Ko-fi](https://ko-fi.com/lucidfabrics)
-- ☕ [Buy Me a Coffee](https://buymeacoffee.com/lucidfabrics)
-- 💜 [GitHub Sponsors](https://github.com/sponsors/lucid-fabrics)
+<p align="left">
+  <a href="https://ko-fi.com/lucidfabrics"><img src="https://img.shields.io/badge/-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Support on Ko-fi"></a>
+  <a href="https://buymeacoffee.com/lucidfabrics"><img src="https://img.shields.io/badge/-Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black" alt="Buy Me a Coffee"></a>
+  <a href="https://github.com/sponsors/lucid-fabrics"><img src="https://img.shields.io/badge/-GitHub%20Sponsors-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors"></a>
+</p>
 
 ## Uninstall
 
