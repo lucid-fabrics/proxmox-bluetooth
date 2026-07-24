@@ -136,7 +136,9 @@ VMs *at the same time* isn't supported yet (one install per host today) - open a
 you need it, it's a small change.
 
 **Does the host lose its own Bluetooth?**
-Yes, while sharing. A server in a closet rarely misses it. `--uninstall` gives it back.
+Yes, while sharing. A server in a closet rarely misses it. Need it back for a moment?
+`--pause` returns the chip to the host, `--resume` hands it back to the VM (which
+reconnects by itself). `--uninstall` removes everything for good.
 
 **What about Windows VMs?**
 The bridge is for Linux guests (it relies on Linux's Bluetooth stack). Windows VMs
