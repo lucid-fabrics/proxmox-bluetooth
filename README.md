@@ -5,6 +5,12 @@
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-%E2%9D%A4-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/lucid-fabrics)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+> **TL;DR:** Bluetooth passthrough to a Proxmox VM fails for Intel onboard chips
+> (BE200, AX210, AX211 - by hardware design, no setting fixes it) and is unreliable on
+> gaming distros like ChimeraOS and Bazzite. This tool shares the host's Bluetooth with
+> the VM over the network instead - two commands, works with any chip Linux supports,
+> survives reboots. Controllers, headphones, and Home Assistant sensors all work.
+
 Pair your Xbox / PlayStation controller, headphones, or sensors **inside** your gaming VM
 (ChimeraOS, Bazzite, Home Assistant, plain Linux) - even with Bluetooth chips that
 "can't be passed through".
@@ -125,52 +131,80 @@ Confirmed by real people (add yours with a PR):
 
 ## FAQ, in human words
 
-**Will my controller lag?**
+### Will my controller lag?
 No. The bridge adds well under a millisecond on the same machine. Bluetooth itself is slower.
 
-**Do I need to buy anything?**
+### Does it work for headphones, keyboards, Home Assistant sensors?
+Yes - the bridge is protocol-transparent (it forwards raw Bluetooth traffic, it doesn't
+understand or filter it). Anything that works on a normal Linux Bluetooth adapter works:
+controllers, audio, HID, BLE sensors for Home Assistant.
+
+### Can I pair several devices at once?
+Yes. It behaves exactly like a normal adapter in the VM - two controllers plus headphones
+is fine. The one-at-a-time limit is about VMs (one VM owns the chip), not devices.
+
+### Do I need to buy anything?
 No. The card you already have works. Even the old one you replaced probably worked.
 
-**My whole VM "died" - black screen, no network (ChimeraOS / Bazzite).**
+### My whole VM "died" - black screen, no network (ChimeraOS / Bazzite).
 It didn't die - it went to sleep. Gaming distros auto-suspend after idle like a
 Steam Deck, and a VM with GPU passthrough never wakes from that. Turn suspend off
 for good inside the VM:
 `sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`
 
-**My controller pairs but nothing responds in Steam (ChimeraOS / Bazzite).**
+### My controller pairs but nothing responds in Steam (ChimeraOS / Bazzite).
 Known quirk in their input layer, not in Bluetooth: run
 `sudo systemctl restart inputplumber`, then turn the controller off and on. Fixed.
 
-**My Intel card looks completely dead. No adapter, scary log lines.**
+### My Intel card looks completely dead. No adapter, scary log lines.
 It is stuck in its blank boot state. Shut the machine down and flip the **power supply
 switch off for 15 seconds**, then boot. A reboot is not enough. The front power button is
 not enough. This one trick cost us a full day - you're welcome.
 
-**I have more than one Bluetooth chip on the host.**
+### I have more than one Bluetooth chip on the host.
 `--check` lists every adapter it finds (`hci0`, `hci1`, ...) with its MAC address so you
 can tell them apart, and if it finds more than one it won't guess - it'll ask you to pick.
 Share a specific one with `./install.sh --adapter 1`. Bridging two chips into two different
 VMs *at the same time* isn't supported yet (one install per host today) - open an issue if
 you need it, it's a small change.
 
-**My VM died / I rebuilt it / I want Bluetooth in a different VM.**
+### My VM died / I rebuilt it / I want Bluetooth in a different VM.
 Just run the client one-liner in the new VM - the host serves whichever VM connects
 (one at a time). Nothing to clean up after a dead VM. If the old VM is still running,
 stop its client first (`--uninstall` there). Only footnote: pairings live inside the
 guest, so pair your devices once in the new VM.
 
-**Does the host lose its own Bluetooth?**
+### Does it survive ChimeraOS / Bazzite OS updates?
+Yes. Those distros replace the system image on update but keep `/etc` and `/var` - which
+is exactly where this installs. Your bridge and pairings come back on their own.
+
+### Does the host lose its own Bluetooth?
 Yes, while sharing. A server in a closet rarely misses it. Need it back for a moment?
 `--pause` returns the chip to the host, `--resume` hands it back to the VM (which
 reconnects by itself). `--uninstall` removes everything for good.
 
-**What about Windows VMs?**
+### Is this secure?
+The bridge speaks on one LAN port (9700, bound to the host's IP) with no authentication -
+the first machine to connect gets the chip. On a home LAN behind your router that's
+usually fine. If it worries you, firewall port 9700 so only your VM's IP can reach it.
+
+### Poor range? Devices only pair up close?
+That's antennas, not the bridge. M.2 cards need their two little antenna cables connected;
+a bare card inside a metal case has almost no reach. USB dongles: a front port or a short
+extension beats the back-panel ports next to all your other cables.
+
+### What about Windows VMs?
 The bridge is for Linux guests (it relies on Linux's Bluetooth stack). Windows VMs
 usually don't have this problem: passing a USB dongle straight through with
 `qm set <vmid> -usb0 host=<id>` just works there. This tool exists because Linux
 guests choke where Windows shrugs.
 
-**Is this Proxmox only?**
+### What about LXC containers?
+Containers share the host's kernel, so they don't need this bridge - you can hand the
+host's Bluetooth to an LXC directly (bind the device / cgroup allow). This tool is for
+real VMs, where the guest runs its own kernel.
+
+### Is this Proxmox only?
 No - any Linux host with KVM VMs (or even two separate machines). Proxmox is just where
 it hurts the most.
 
