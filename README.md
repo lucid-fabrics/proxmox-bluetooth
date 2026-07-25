@@ -27,6 +27,20 @@ Intel built their Bluetooth chips so that only the machine that boots them can d
 The moment Proxmox hands the chip to a VM, it wipes itself blank. No setting fixes this.
 It is physically how the chip works.
 
+## First: try the simple thing
+
+Plain USB passthrough works for plenty of setups - a normal dongle into a normal
+Linux distro (Debian, Ubuntu) often just works:
+
+```bash
+qm set <vmid> -usb0 host=<vendor:product>
+```
+
+If that gives you working Bluetooth in your VM, stop reading - you don't need this
+project. This exists for when it doesn't work: **Intel onboard chips** (BE200/AX2xx -
+never work, by design), **gaming distros** (ChimeraOS/Bazzite kernels + quirky chip
+firmware), trimmed cloud kernels, and dongles that wedge after a few VM restarts.
+
 ## The fix: don't hand over the chip. Share it.
 
 The chip stays on your Proxmox host, where it works. A tiny bridge streams it into the VM
