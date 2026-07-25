@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bluetooth in your Proxmox Linux VMs, finally | proxmox-bluetooth</title>
+<meta name="description" content="Bluetooth passthrough to a Proxmox VM fails for Intel onboard chips (BE200, AX210, AX211) by hardware design, and is unreliable on ChimeraOS and Bazzite. proxmox-bluetooth shares the host's Bluetooth over the network instead - two commands, works with any chip Linux supports.">
+<link rel="canonical" href="https://lucid-fabrics.github.io/proxmox-bluetooth/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Bluetooth in your Proxmox Linux VMs, finally">
+<meta property="og:description" content="Intel onboard Bluetooth chips can never be passed through to a VM - this bridges it over the network instead. Two commands, no new hardware.">
+<meta property="og:url" content="https://lucid-fabrics.github.io/proxmox-bluetooth/">
+<meta property="og:image" content="https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/docs/img/controller-connected.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 760px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+  h1 { font-size: 1.75rem; margin-bottom: 0.25rem; }
+  .tagline { color: #666; margin-top: 0; }
+  .tldr { border-inline-start: none; background: rgba(127,127,127,0.08); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0; }
+  .cta { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 1.5rem 0; }
+  .cta a { background: #1f6feb; color: #fff; text-decoration: none; padding: 0.6rem 1.1rem; border-radius: 6px; font-weight: 600; }
+  .cta a.secondary { background: transparent; color: #1f6feb; border: 1px solid #1f6feb; }
+  pre { background: rgba(127,127,127,0.1); border-radius: 8px; padding: 1rem; overflow-x: auto; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  details { margin: 0.75rem 0; padding: 0.75rem 1rem; background: rgba(127,127,127,0.06); border-radius: 8px; }
+  summary { cursor: pointer; font-weight: 600; }
+  img { max-width: 100%; border-radius: 8px; }
+  footer { margin-top: 3rem; color: #888; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+
+<h1>Bluetooth in your Proxmox Linux VMs. Finally.</h1>
+<p class="tagline">Pair a controller, headphones, or a Home Assistant sensor inside a VM - even with a Bluetooth chip that "can't be passed through."</p>
+
+<div class="tldr">
+<strong>TL;DR:</strong> Bluetooth passthrough to a Proxmox VM fails for Intel onboard chips
+(BE200, AX210, AX211 - by hardware design, no setting fixes it) and is unreliable on
+gaming distros like ChimeraOS and Bazzite. This tool shares the host's Bluetooth with
+the VM over the network instead. Two commands. Works with any chip Linux supports.
+Survives reboots.
+</div>
+
+<img src="img/controller-connected.jpg" alt="Xbox controller connected in Steam inside a ChimeraOS VM, bridged from the Proxmox host's Bluetooth chip" width="700">
+
+<div class="cta">
+  <a href="https://github.com/lucid-fabrics/proxmox-bluetooth">View on GitHub</a>
+  <a class="secondary" href="https://github.com/lucid-fabrics/proxmox-bluetooth#readme">Full README</a>
+</div>
+
+<h2>Two commands</h2>
+<p>On the Proxmox host:</p>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh | sudo bash</code></pre>
+<p>It prints one line - paste that inside your VM. Done.</p>
+
+<h2>Frequently asked questions</h2>
+
+<details>
+<summary>Why can't I just pass the USB Bluetooth controller through to the VM?</summary>
+<p>Intel CNVi Bluetooth (the BE200/AX2xx family found on most modern motherboards) requires
+the host's own driver to load its firmware at boot. Any passthrough handoff - USB redirect,
+vfio, driver unbind - resets the chip to its ROM bootloader, and the guest can never
+complete the firmware handshake. It's not a bug you can patch around; it's how the chip
+is designed. Plain USB dongles into plain Linux guests often do work - try that first.</p>
+</details>
+
+<details>
+<summary>Will my controller lag?</summary>
+<p>No. The bridge adds well under a millisecond on the same machine. Bluetooth's own
+radio latency is slower than that.</p>
+</details>
+
+<details>
+<summary>Does it work for headphones, keyboards, or Home Assistant sensors?</summary>
+<p>Yes. The bridge is protocol-transparent - it forwards raw Bluetooth traffic without
+understanding or filtering it. Anything that works on a normal Linux Bluetooth adapter
+works: controllers, audio, HID, and BLE sensors for Home Assistant.</p>
+</details>
+
+<details>
+<summary>Do I need to buy new hardware?</summary>
+<p>No. The Bluetooth chip you already have works - even the one you might have already
+replaced trying to fix this.</p>
+</details>
+
+<details>
+<summary>Does it survive ChimeraOS or Bazzite OS updates?</summary>
+<p>Yes. Those distros replace the system image on update but keep <code>/etc</code> and
+<code>/var</code>, which is exactly where this installs. The bridge and your pairings
+come back on their own.</p>
+</details>
+
+<details>
+<summary>Is this Proxmox-specific?</summary>
+<p>No - any Linux host running KVM VMs works, or even two separate physical machines.
+Proxmox is just where this problem is reported the most.</p>
+</details>
+
+<p>Full FAQ, compatibility table, and install script: <a href="https://github.com/lucid-fabrics/proxmox-bluetooth#readme">see the README</a>.</p>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Why can't I just pass the USB Bluetooth controller through to the VM?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Intel CNVi Bluetooth (the BE200/AX2xx family found on most modern motherboards) requires the host's own driver to load its firmware at boot. Any passthrough handoff - USB redirect, vfio, driver unbind - resets the chip to its ROM bootloader, and the guest can never complete the firmware handshake. It's not a bug you can patch around; it's how the chip is designed. Plain USB dongles into plain Linux guests often do work - try that first."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Will my controller lag using this Bluetooth bridge?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. The bridge adds well under a millisecond on the same machine. Bluetooth's own radio latency is slower than that."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it work for headphones, keyboards, or Home Assistant sensors?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The bridge is protocol-transparent - it forwards raw Bluetooth traffic without understanding or filtering it. Anything that works on a normal Linux Bluetooth adapter works: controllers, audio, HID, and BLE sensors for Home Assistant."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Do I need to buy new hardware to fix Proxmox VM Bluetooth?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. The Bluetooth chip you already have works - even the one you might have already replaced trying to fix this."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does this survive ChimeraOS or Bazzite OS updates?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Those distros replace the system image on update but keep /etc and /var, which is exactly where this installs. The bridge and pairings come back on their own."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is proxmox-bluetooth Proxmox-specific?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No - any Linux host running KVM VMs works, or even two separate physical machines. Proxmox is just where this problem is reported the most."
+      }
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "proxmox-bluetooth",
+  "operatingSystem": "Linux",
+  "applicationCategory": "SystemAdministrationApplication",
+  "description": "Shares a Proxmox host's Bluetooth adapter with a Linux VM over the network, for chips (like Intel CNVi BE200/AX2xx) that cannot be passed through directly.",
+  "url": "https://github.com/lucid-fabrics/proxmox-bluetooth",
+  "codeRepository": "https://github.com/lucid-fabrics/proxmox-bluetooth",
+  "license": "https://github.com/lucid-fabrics/proxmox-bluetooth/blob/main/LICENSE",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+
+<footer>
+  <a href="https://github.com/lucid-fabrics/proxmox-bluetooth">github.com/lucid-fabrics/proxmox-bluetooth</a> · MIT License ·
+  <a href="https://github.com/sponsors/lucid-fabrics">Sponsor</a>
+</footer>
+
+</body>
+</html>
