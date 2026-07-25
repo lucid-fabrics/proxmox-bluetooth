@@ -23,6 +23,23 @@ echo "== syntax =="
 out=$(bash -n install.sh 2>&1); check "install.sh parses" 0 $? "$out"
 out=$(bash -n build.sh 2>&1);   check "build.sh parses"   0 $? "$out"
 
+echo "== docs/ landing page =="
+out=$(python3 -c "import json,re,sys
+html = open('docs/index.html').read()
+blocks = re.findall(r'<script type=\"application/ld\+json\">(.*?)</script>', html, re.S)
+assert len(blocks) == 2, f'expected 2 JSON-LD blocks, found {len(blocks)}'
+for b in blocks: json.loads(b)
+print('JSONLD_OK')" 2>&1)
+check "JSON-LD blocks are valid JSON" 0 $? "$out" "JSONLD_OK"
+
+out=$(python3 -c "import xml.dom.minidom as m; m.parse('docs/sitemap.xml'); print('XML_OK')" 2>&1)
+check "sitemap.xml is well-formed" 0 $? "$out" "XML_OK"
+
+n_files=$(grep -l "lucid-fabrics.github.io/proxmox-bluetooth" docs/sitemap.xml docs/robots.txt docs/index.html 2>/dev/null | wc -l)
+[ "$((n_files))" -eq 3 ] \
+    && ok "canonical Pages URL present in sitemap, robots, and page" \
+    || fail "canonical Pages URL missing from one of docs/{index.html,sitemap.xml,robots.txt}"
+
 if command -v shellcheck >/dev/null; then
     echo "== shellcheck =="
     out=$(shellcheck -S error install.sh 2>&1); check "no shellcheck errors" 0 $? "$out"
