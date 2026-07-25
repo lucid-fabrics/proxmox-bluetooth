@@ -153,6 +153,12 @@ Share a specific one with `./install.sh --adapter 1`. Bridging two chips into tw
 VMs *at the same time* isn't supported yet (one install per host today) - open an issue if
 you need it, it's a small change.
 
+**My VM died / I rebuilt it / I want Bluetooth in a different VM.**
+Just run the client one-liner in the new VM - the host serves whichever VM connects
+(one at a time). Nothing to clean up after a dead VM. If the old VM is still running,
+stop its client first (`--uninstall` there). Only footnote: pairings live inside the
+guest, so pair your devices once in the new VM.
+
 **Does the host lose its own Bluetooth?**
 Yes, while sharing. A server in a closet rarely misses it. Need it back for a moment?
 `--pause` returns the chip to the host, `--resume` hands it back to the VM (which
