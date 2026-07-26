@@ -1,0 +1,66 @@
+name: Verify shipped binary
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1" # weekly, catches upstream/toolchain breakage
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    # Debian 12 on purpose: it is the oldest glibc we support (Proxmox 8), and the
+    # platform build.sh says the shipped artifact must come from. Building on
+    # ubuntu-latest would produce a binary that cannot start on a Proxmox 8 host.
+    container: debian:bookworm
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: The committed binary must match its own checksum file
+        run: |
+          apt-get update -qq && apt-get install -y -qq coreutils >/dev/null
+          cd bin && sha256sum -c btproxy-x86_64.sha256
+
+      - name: The committed binary must match the hash pinned in install.sh
+        run: |
+          pinned=$(grep -oE '^BTPROXY_SHA256=[0-9a-f]{64}' install.sh | cut -d= -f2)
+          actual=$(sha256sum bin/btproxy-x86_64 | cut -d' ' -f1)
+          echo "pinned in install.sh: $pinned"
+          echo "actual binary:        $actual"
+          [ "$pinned" = "$actual" ] || { echo "::error::install.sh pins a different hash than the shipped binary"; exit 1; }
+
+      - name: The shipped binary must run and expose the flags install.sh uses
+        run: |
+          OUT="$(./bin/btproxy-x86_64 --help)"
+          echo "$OUT"
+          for flag in connect listen port index; do
+            echo "$OUT" | grep -q -- "--$flag" || { echo "::error::shipped btproxy lacks --$flag"; exit 1; }
+          done
+
+      - name: It must not need a newer glibc than Proxmox 8 provides
+        run: |
+          apt-get install -y -qq binutils >/dev/null
+          max=$(objdump -T bin/btproxy-x86_64 | grep -oE 'GLIBC_[0-9.]+' | sort -V | tail -1)
+          echo "highest glibc symbol required: $max"
+          # Without this, an unreadable symbol table yields an empty $max and the
+          # comparison below trivially succeeds, passing the gate for any binary.
+          [ -n "$max" ] || { echo "::error::no GLIBC symbols found in bin/btproxy-x86_64"; exit 1; }
+          # Proxmox 8 ships glibc 2.36; anything above that will not start there.
+          [ "$(printf '%s\n2.36\n' "${max#GLIBC_}" | sort -V | tail -1)" = "2.36" ] \
+            || { echo "::error::$max is newer than glibc 2.36 (Proxmox 8) - rebuild on Debian 12"; exit 1; }
+
+      - name: Rebuild from official BlueZ source and prove the shipped binary IS that build
+        run: |
+          bash build.sh   # writes to build/, never touches the committed binary
+          echo "committed: $(sha256sum bin/btproxy-x86_64)"
+          echo "rebuilt:   $(sha256sum build/btproxy-x86_64)"
+          # Strict byte equality, no fallback. This build is deterministic inside the
+          # pinned debian:bookworm image, so any difference means the shipped binary is
+          # not what this source produces, and the README says as much.
+          cmp bin/btproxy-x86_64 build/btproxy-x86_64 \
+            || { echo "::error::bin/btproxy-x86_64 does not byte-match a fresh build from BlueZ $(grep -oE 'VER=[0-9.]+' build.sh | cut -d= -f2) source"; exit 1; }
+          echo "Byte-identical: the shipped binary reproduces exactly from official BlueZ source."
