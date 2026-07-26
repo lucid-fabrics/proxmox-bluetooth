@@ -12,6 +12,7 @@
 #   ./install.sh <host-ip>          # inside a VM: connect to this host
 #   ./install.sh --check            # is my Bluetooth chip healthy? (lists all chips)
 #   ./install.sh --status           # is the bridge working? (either side)
+#   ./install.sh --build            # build btproxy from BlueZ source, don't use the shipped binary
 #   ./install.sh --pause            # host: take Bluetooth back temporarily
 #   ./install.sh --resume           # host: share it with the VM again
 #   ./install.sh --uninstall        # undo everything, restore normal Bluetooth
@@ -23,6 +24,7 @@ PORT=9700
 ADAPTER=""
 ALLOW=""
 ALLOW_ANY=0
+BUILD=0
 FW_FILE=/etc/proxmox-bluetooth/firewall.nft
 ALLOW_FILE=/etc/proxmox-bluetooth/allow
 
@@ -82,6 +84,41 @@ verify_binary() { # verify_binary <file> <sha256-file>
 get_binary() {
     if [ ! -x "$BIN" ]; then
         local here; here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+
+        # --build: compile from the pinned BlueZ tarball and never touch the shipped
+        # binary. Debian/Ubuntu only (build.sh uses apt-get), which is why this is
+        # opt-in rather than the default: immutable guests (ChimeraOS, Bazzite) have
+        # no package manager to install a toolchain with and can only use a prebuilt.
+        if [ "$BUILD" = 1 ]; then
+            local bs="$here/build.sh"
+            if [ ! -f "$bs" ]; then
+                # Under `curl ... | bash` there is no build.sh on disk to run.
+                bs=$(mktemp) || die "Cannot create a temp file to fetch build.sh into."
+                curl -fsSL "$REPO_RAW/build.sh" -o "$bs" || die "Could not download build.sh. No internet?"
+            fi
+            say "Building btproxy from bluez-5.66 source. This takes a few minutes..."
+            OUT="$BIN" bash "$bs" || die "Build failed.
+  build.sh needs apt-get and the BlueZ build dependencies, so it only works on
+  Debian/Ubuntu (which includes a Proxmox host). See MANUAL_INSTALL.md to do it by hand."
+            chmod 755 "$BIN"
+            say "Built btproxy from source: $BIN"
+            # Built here from upstream source, so nothing of ours was redistributed and
+            # there is no binary-redistribution notice to ship. Return before writing it.
+            return 0
+        fi
+
+        # A btproxy already on PATH wins over the binary we ship: it means the user
+        # built their own or their distro packages it (Arch has it in bluez-utils), so
+        # putting a second, less trusted copy on the machine buys nothing. Same reason
+        # there is no notice to write - we are not redistributing that copy, and
+        # uninstall never removes it because it lives outside the paths we clean.
+        local sys; sys=$(command -v btproxy 2>/dev/null || true)
+        if [ -n "$sys" ]; then
+            say "Using the btproxy already installed at $sys"
+            BIN="$sys"
+            return 0
+        fi
+
         if [ -f "$here/bin/btproxy-x86_64" ]; then
             # Check against the hash pinned in this script, not against the .sha256 file
             # sitting next to the binary: anyone who could swap one could swap both, and
@@ -94,7 +131,7 @@ get_binary() {
   Refusing to install it. Build it yourself instead: see MANUAL_INSTALL.md"
             install -m755 "$here/bin/btproxy-x86_64" "$BIN"
         else
-            say "Downloading btproxy..."
+            say "Downloading btproxy (BlueZ 5.66 build, GPL-2.0-or-later, not our code)..."
             curl -fsSL "$REPO_RAW/bin/btproxy-x86_64" -o "$BIN" || die "Download failed. No internet?"
             local got
             got=$(sha256sum "$BIN" | cut -d" " -f1)
@@ -547,6 +584,8 @@ while [ $# -gt 0 ]; do
         --allow-any)
             [ -z "$ALLOW" ] || die "--allow and --allow-any contradict each other. Pick one."
             ALLOW_ANY=1; shift ;;
+        --build)
+            BUILD=1; shift ;;
         *) ARGS+=("$1"); shift ;;
     esac
 done
