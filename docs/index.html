@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="u3JO41PPrrJlMTt9YNoRbawkEgdziwe-3wNXxvlLpv8" />
 <title>Bluetooth in your Proxmox Linux VMs, finally | proxmox-bluetooth</title>
-<meta name="description" content="Bluetooth passthrough to a Proxmox VM fails for Intel onboard chips (BE200, AX210, AX211) by hardware design, and is unreliable on ChimeraOS and Bazzite. proxmox-bluetooth shares the host's Bluetooth over the network instead - two commands, works with any chip Linux supports.">
+<meta name="description" content="USB-passing a Bluetooth adapter into a VM makes the chip drop its firmware, and trimmed or immutable guests (Home Assistant OS, ChimeraOS, Bazzite) often cannot reload it - Intel BE200/AX2xx combo chips worst of all. proxmox-bluetooth keeps the adapter on the host and shares it over the network instead, in two commands.">
 <link rel="canonical" href="https://lucid-fabrics.github.io/proxmox-bluetooth/">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Bluetooth in your Proxmox Linux VMs, finally">
-<meta property="og:description" content="Intel onboard Bluetooth chips can never be passed through to a VM - this bridges it over the network instead. Two commands, no new hardware.">
+<meta property="og:description" content="When USB passthrough leaves your VM without Bluetooth, share the host's adapter over the network instead. Two commands, no new hardware.">
 <meta property="og:url" content="https://lucid-fabrics.github.io/proxmox-bluetooth/">
 <meta property="og:image" content="https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/docs/img/controller-connected.jpg">
 <meta name="twitter:card" content="summary_large_image">
@@ -36,11 +36,13 @@
 <p class="tagline">Pair a controller, headphones, or a Home Assistant sensor inside a VM - even with a Bluetooth chip that "can't be passed through."</p>
 
 <div class="tldr">
-<strong>TL;DR:</strong> Bluetooth passthrough to a Proxmox VM fails for Intel onboard chips
-(BE200, AX210, AX211 - by hardware design, no setting fixes it) and is unreliable on
-gaming distros like ChimeraOS and Bazzite. This tool shares the host's Bluetooth with
-the VM over the network instead. Two commands. Works with any chip Linux supports.
-Survives reboots.
+<strong>TL;DR:</strong> USB-passing a Bluetooth adapter into a VM makes the chip drop its
+firmware, and the guest can only recover if it has the right driver and firmware blobs.
+Full distros often manage it; Home Assistant OS, ChimeraOS, Bazzite and other trimmed or
+immutable guests frequently don't, and Intel onboard combo chips (BE200, AX210, AX211) are
+the worst offenders. This tool skips the handoff: the adapter stays on the host and is
+shared to the VM over the network. Two commands, survives reboots.
+<strong>Try plain USB passthrough first</strong> - it's simpler and works for plenty of setups.
 </div>
 
 <img src="img/controller-connected.jpg" alt="Xbox controller connected in Steam inside a ChimeraOS VM, bridged from the Proxmox host's Bluetooth chip" width="700">
@@ -59,17 +61,19 @@ Survives reboots.
 
 <details>
 <summary>Why can't I just pass the USB Bluetooth controller through to the VM?</summary>
-<p>Intel CNVi Bluetooth (the BE200/AX2xx family found on most modern motherboards) requires
-the host's own driver to load its firmware at boot. Any passthrough handoff - USB redirect,
-vfio, driver unbind - resets the chip to its ROM bootloader, and the guest can never
-complete the firmware handshake. It's not a bug you can patch around; it's how the chip
-is designed. Plain USB dongles into plain Linux guests often do work - try that first.</p>
+<p>Nearly all Bluetooth adapters clear their firmware when they're re-enumerated on USB, so
+after a passthrough the guest has to load it again. That works when the guest has the
+matching driver and firmware blobs, which is why a full Debian or Arch VM often passes
+through fine. It fails when the guest can't: Home Assistant OS and gaming distros ship
+trimmed kernels and incomplete <code>linux-firmware</code>, and Intel CNVi combo chips
+(BE200, AX2xx) are especially unforgiving. <strong>Try plain USB passthrough first</strong> -
+if your guest is only missing a firmware package, install it and you don't need this tool.</p>
 </details>
 
 <details>
 <summary>Will my controller lag?</summary>
-<p>No. The bridge adds well under a millisecond on the same machine. Bluetooth's own
-radio latency is slower than that.</p>
+<p>No. The bridge forwards HCI over a local TCP connection, which on a LAN is far below
+Bluetooth's own radio latency. In practice controllers feel the same as on bare metal.</p>
 </details>
 
 <details>
@@ -93,6 +97,17 @@ come back on their own.</p>
 </details>
 
 <details>
+<summary>Is it secure?</summary>
+<p>Know the trade-off. The bridge speaks plain, unauthenticated TCP on port 9700, so by
+default <strong>whichever machine on your LAN connects first gets the Bluetooth chip</strong>,
+with raw HCI access to the radio. Lock it to your VM with
+<code>./install.sh --allow 192.168.1.50</code>, which installs an nftables rule accepting
+that address and dropping everything else. There is no encryption either, so treat it as a
+trusted-LAN tool between a host and its own VM, not something to route across networks you
+don't control.</p>
+</details>
+
+<details>
 <summary>Is this Proxmox-specific?</summary>
 <p>No - any Linux host running KVM VMs works, or even two separate physical machines.
 Proxmox is just where this problem is reported the most.</p>
@@ -110,7 +125,7 @@ Proxmox is just where this problem is reported the most.</p>
       "name": "Why can't I just pass the USB Bluetooth controller through to the VM?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Intel CNVi Bluetooth (the BE200/AX2xx family found on most modern motherboards) requires the host's own driver to load its firmware at boot. Any passthrough handoff - USB redirect, vfio, driver unbind - resets the chip to its ROM bootloader, and the guest can never complete the firmware handshake. It's not a bug you can patch around; it's how the chip is designed. Plain USB dongles into plain Linux guests often do work - try that first."
+        "text": "Nearly all Bluetooth adapters clear their firmware when they are re-enumerated on USB, so after a passthrough the guest has to load it again. That works when the guest has the matching driver and firmware blobs, which is why a full Debian or Arch VM often passes through fine. It fails when the guest cannot: Home Assistant OS and gaming distros ship trimmed kernels and incomplete linux-firmware, and Intel CNVi combo chips (BE200, AX2xx) are especially unforgiving. Try plain USB passthrough first - if your guest just needs a firmware package, install it and you do not need this tool."
       }
     },
     {
@@ -118,7 +133,7 @@ Proxmox is just where this problem is reported the most.</p>
       "name": "Will my controller lag using this Bluetooth bridge?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "No. The bridge adds well under a millisecond on the same machine. Bluetooth's own radio latency is slower than that."
+        "text": "No. The bridge forwards HCI over a local TCP connection, which on a LAN is far below Bluetooth's own radio latency. In practice controllers feel the same as on bare metal."
       }
     },
     {
@@ -143,6 +158,14 @@ Proxmox is just where this problem is reported the most.</p>
       "acceptedAnswer": {
         "@type": "Answer",
         "text": "Yes. Those distros replace the system image on update but keep /etc and /var, which is exactly where this installs. The bridge and pairings come back on their own."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is the proxmox-bluetooth bridge secure?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Know the trade-off. The bridge speaks plain, unauthenticated TCP on port 9700, so by default whichever machine on your LAN connects first gets the Bluetooth chip, with raw HCI access to the radio. Lock it to your VM with ./install.sh --allow 192.168.1.50, which installs an nftables rule accepting that address and dropping everything else. There is no encryption either, so treat it as a trusted-LAN tool between a host and its own VM, not something to route across networks you do not control."
       }
     },
     {
@@ -172,8 +195,11 @@ Proxmox is just where this problem is reported the most.</p>
 </script>
 
 <footer>
-  <a href="https://github.com/lucid-fabrics/proxmox-bluetooth">github.com/lucid-fabrics/proxmox-bluetooth</a> · MIT License ·
+  <a href="https://github.com/lucid-fabrics/proxmox-bluetooth">github.com/lucid-fabrics/proxmox-bluetooth</a> · MIT License · built on <a href="http://www.bluez.org/">BlueZ</a> (GPL-2.0-or-later) ·
   <a href="https://github.com/sponsors/lucid-fabrics">Sponsor</a>
+  <p>An independent community project, not affiliated with or endorsed by Proxmox Server
+  Solutions GmbH or the BlueZ project. "Proxmox" is a registered trademark of Proxmox
+  Server Solutions GmbH; other names are the property of their respective owners.</p>
 </footer>
 
 </body>

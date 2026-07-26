@@ -1,3 +1,7 @@
+This license applies to the original work in this repository only. The bundled
+`bin/btproxy-x86_64` binary is a separately-licensed third-party component (BlueZ
+`btproxy`, GPL-2.0-or-later) - see THIRD_PARTY_LICENSES.md.
+
 MIT License
 
 Copyright (c) 2026 Wassim Mehanna

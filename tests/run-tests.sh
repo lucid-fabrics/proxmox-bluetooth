@@ -4,7 +4,7 @@
 # CLI tests (arg validation) only run as root - CI runs the whole thing with sudo.
 set -u
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 PASS=0; FAIL=0
 
 ok()   { PASS=$((PASS+1)); echo "  ok: $1"; }
@@ -53,6 +53,20 @@ got=$(sha256sum bin/btproxy-x86_64 2>/dev/null | cut -d" " -f1 || shasum -a 256 
 [ "$want" = "$got" ] && ok "bin/btproxy-x86_64.sha256 matches the committed binary" \
     || fail "checksum file does not match the binary - regenerate bin/btproxy-x86_64.sha256"
 
+embedded=$(grep -oE '^BTPROXY_SHA256=[0-9a-f]{64}' install.sh | cut -d= -f2)
+[ -n "$embedded" ] && [ "$embedded" = "$want" ] \
+    && ok "BTPROXY_SHA256 pinned in install.sh matches the committed binary" \
+    || fail "BTPROXY_SHA256 in install.sh ($embedded) != binary hash ($want) - update it"
+
+echo "== self() prints a runnable command =="
+# Under `curl ... | sudo bash` there is no script on disk and $0 is "bash", so a hint like
+# "$0 --resume" would hand the user a command that cannot run.
+out=$(bash -c 'PBT_SOURCED=1 source ./install.sh; self' 2>&1)
+case "$out" in
+    *"install.sh"*) ok "self() returns an invocable command ($out)" ;;
+    *)              fail "self() returned something unusable: $out" ;;
+esac
+
 echo "== test seam =="
 out=$(bash -c 'PBT_SOURCED=1 source ./install.sh && declare -F list_adapters get_binary pause resume >/dev/null && echo SEAM_OK' 2>&1)
 check "sourcing loads functions without acting" 0 $? "$out" "SEAM_OK"
@@ -66,7 +80,9 @@ check "finds adapter with MAC and bus" 0 $? "$out" "0 AA:BB:CC:DD:EE:FF USB"
 
 rm "$FIX/hci0/address"
 out=$(bash -c "PBT_SOURCED=1 source ./install.sh; PBT_SYS_BT='$FIX' list_adapters" 2>&1)
-check "missing address reported as unavailable" 0 $? "$out" "address unavailable"
+# The placeholder must stay a single token: callers parse this with
+# `read -r idx mac bus`, and a multi-word value silently shifts the columns.
+check "missing address still yields 3 parseable fields" 0 $? "$out" "0 - USB"
 
 EMPTY=$(mktemp -d)
 bash -c "PBT_SOURCED=1 source ./install.sh; PBT_SYS_BT='$EMPTY' list_adapters" >/dev/null 2>&1
@@ -103,6 +119,17 @@ if [ "$(id -u)" = 0 ]; then
     echo "== CLI validation (root) =="
     out=$(bash install.sh --adapter 2>&1);      check "--adapter without value dies" 1 $? "$out" "needs a number"
     out=$(bash install.sh not-an-ip 2>&1);      check "garbage arg rejected"         1 $? "$out" "Not an IP address"
+    out=$(bash install.sh --allow 2>&1);        check "--allow without value dies"   1 $? "$out" "needs an IP or CIDR"
+    out=$(bash install.sh --allow 1.2.3 2>&1);  check "--allow rejects a partial IP" 1 $? "$out" "needs an IP or CIDR"
+    out=$(bash install.sh --allow "1.2.3.4; rm -rf /" 2>&1)
+    check "--allow rejects shell metacharacters" 1 $? "$out" "needs an IP or CIDR"
+    # A rule matching every address is not a restriction; saying "Locked down" would be a lie.
+    out=$(bash install.sh --allow 0.0.0.0/0 2>&1)
+    check "--allow rejects an allow-everything CIDR" 1 $? "$out" "every address"
+    # Without a digits-only check, this sets ADAPTER=--allow and the IP falls through to
+    # the client path, turning a Proxmox host into a bridge client.
+    out=$(bash install.sh --adapter --allow 1.2.3.4 2>&1)
+    check "--adapter cannot swallow the next flag" 1 $? "$out" "needs a number"
     if systemd-detect-virt --quiet 2>/dev/null; then
         out=$(bash install.sh 2>&1);            check "auto mode on a VM refuses to act as host" 1 $? "$out" "looks like a VM"
     fi

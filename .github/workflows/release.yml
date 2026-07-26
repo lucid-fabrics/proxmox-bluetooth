@@ -145,15 +145,28 @@ jobs:
             printf 'curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh | sudo bash\n'
             printf '```\n'
             echo ""
+            echo "### Licensing"
+            echo ""
+            echo "\`btproxy-x86_64\` is an unmodified build of \`btproxy\` from [BlueZ](http://www.bluez.org/) 5.66, not code written by this project."
+            echo "It is **GPL-2.0-or-later**, and also contains LGPL-2.1-or-later and BSD-2-Clause (© 2013 Kenneth MacKay) code."
+            echo "Full texts and the written source offer are in the attached \`THIRD_PARTY_LICENSES.md\`."
+            echo "The rest of this repository is MIT."
+            echo ""
             echo "☕ Support: [Ko-fi](https://ko-fi.com/lucidfabrics) | [Buy Me a Coffee](https://buymeacoffee.com/lucidfabrics) | [GitHub Sponsors](https://github.com/sponsors/lucid-fabrics)"
           } > "$NOTES_FILE"
 
       - name: Create release
         if: steps.bump.outputs.bump != 'none' && steps.check.outputs.exists == 'false'
         run: |
+          # btproxy-x86_64 is GPL-2.0-or-later and also carries LGPL-2.1 and
+          # BSD-2-Clause code, so its license texts must travel with it.
           gh release create "v${{ steps.version.outputs.new }}" \
             --title "v${{ steps.version.outputs.new }}" \
             --notes-file "${{ steps.notes.outputs.notes_file }}" \
-            bin/btproxy-x86_64 bin/btproxy-x86_64.sha256
+            bin/btproxy-x86_64 bin/btproxy-x86_64.sha256 \
+            THIRD_PARTY_LICENSES.md LICENSE \
+            LICENSES/GPL-2.0-or-later.txt \
+            LICENSES/LGPL-2.1-or-later.txt \
+            LICENSES/BSD-2-Clause.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
