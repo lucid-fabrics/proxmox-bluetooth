@@ -123,7 +123,7 @@ You'll see something like this:
 ==> Bluetooth adapters on this machine:
     [0] hci0 - 70:08:10:A4:F1:45 (USB)
 ==> All adapters healthy. You are good to go.
-==> Downloading btproxy...
+==> Downloading btproxy (BlueZ 5.66 build, GPL-2.0-or-later, not our code)...
 ==> Checksum verified against the hash pinned in this script.
 ==> Bluetooth (hci0) is now shared on 192.168.1.3:9700.
 
@@ -142,6 +142,10 @@ That last warning is not boilerplate, it is the honest default: read
 `Checksum` lines appear when the script runs on its own; from a git clone it uses the local
 `bin/` copy instead.)
 
+**Don't want to pipe a script into root, or run a binary you didn't build?** Reasonable.
+`--build` compiles the bridge from official BlueZ source on your machine instead, and
+[Four ways to install](#four-ways-to-install) covers that plus the fully manual route.
+
 **What to do:** copy that last line exactly (your IP will be different) and run it inside the VM.
 
 Inside the VM, you'll see:
@@ -154,33 +158,46 @@ Inside the VM, you'll see:
 
 Both sides auto-start at boot and auto-reconnect. Set it up once, forget it exists.
 
-### Three ways to install
+### Four ways to install
 
-Pick whichever suits you, all three are fully supported and land on the same result.
-The one-liner above is the quickest. The other two:
+All four land on the same result. They differ only in how much you take on trust, listed
+from least to most. The one-liner above is number 3.
 
-**Read it first, then run it:**
+**1. No script, no binary from us.** [MANUAL_INSTALL.md](MANUAL_INSTALL.md) walks through
+building `btproxy` from official BlueZ source and writing the systemd units by hand.
+Follow all of it (including the small restart wrapper, which stops the bridge from wedging
+after a VM reboot) and you get the same result. `install.sh` only automates this.
+
+**2. Our script, but no binary from us.**
 
 ```bash
 curl -fsSL -O https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh
 less install.sh          # readable bash, nothing minified or obfuscated
-sudo bash install.sh
+sudo bash install.sh --build
 ```
 
-Run on its own like that, the script fetches `bin/btproxy-x86_64` from this repo and
-verifies it against the SHA-256 pinned in the script itself, refusing to install anything
-that doesn't match. To have everything present before you start, clone the repo, the
-script then uses the local `bin/` copy:
+`--build` compiles `btproxy` on your machine from the kernel.org BlueZ 5.66 tarball, with
+the tarball's own SHA-256 pinned in `build.sh`, and installs that. Nothing prebuilt from
+this repo is downloaded or run. It needs `apt-get` and a few minutes, which is why it is
+opt-in rather than the default: immutable guests (ChimeraOS, Bazzite) have no way to
+install a toolchain and can only use a prebuilt binary.
+
+**Already have `btproxy`?** Then you need none of this. `install.sh` uses whatever
+`btproxy` is on `PATH` and installs no copy of its own, so `pacman -S bluez-utils` on Arch
+or a hand-built binary from step 1 is enough, and `--uninstall` will not touch it.
+
+**3. Read it first, then run it.** Same as above without `--build`: the script fetches
+`bin/btproxy-x86_64`, verifies it against the SHA-256 pinned in the script itself, and
+refuses to install anything that doesn't match. That binary is
+[reproducible from upstream source](#about-that-bundled-binary) in one command.
+
+**4. Clone it,** so everything is present before you start and the script uses the local
+`bin/` copy rather than downloading:
 
 ```bash
 git clone https://github.com/lucid-fabrics/proxmox-bluetooth
 cd proxmox-bluetooth && sudo ./install.sh
 ```
-
-**Or skip this project's script entirely:** [MANUAL_INSTALL.md](MANUAL_INSTALL.md) walks
-through building `btproxy` from official BlueZ source and writing the systemd units by
-hand. Follow all of it (including the small restart wrapper, which stops the bridge from
-wedging after a VM reboot) and you get the same result, `install.sh` just automates it.
 
 ### About that bundled binary
 
@@ -202,9 +219,10 @@ packaged. `bluez` obviously is, but that package doesn't include this particular
 | Arch | **yes** | it's in `bluez-utils` |
 
 Proxmox is Debian, and the guests this exists for are Debian/Ubuntu or Fedora Atomic, so
-in practice building from source is the only route. On Arch, genuinely just install
-`bluez-utils` and use the systemd units from [MANUAL_INSTALL.md](MANUAL_INSTALL.md), you
-don't need anything from this repo but the config.
+in practice building from source is the only route. On Arch, genuinely just
+`pacman -S bluez-utils`: `install.sh` then finds that `btproxy` on `PATH` and installs no
+binary at all, or you can skip this repo entirely and take just the systemd units from
+[MANUAL_INSTALL.md](MANUAL_INSTALL.md).
 
 **Where it runs.** It is **x86_64 only** (there is no ARM build; on arm64 you must build
 your own, see [MANUAL_INSTALL.md](MANUAL_INSTALL.md)). It's compiled on Debian 12 on
@@ -305,6 +323,7 @@ Run these on whichever machine they apply to. Under `curl | bash` append them af
 | `install.sh --adapter N` | host | Pick a chip when there's more than one |
 | `install.sh --allow <ip/cidr>` | host | Restrict port 9700 to one address |
 | `install.sh --allow-any` | host | Remove that restriction |
+| `install.sh --build` | either | Compile `btproxy` from BlueZ source instead of using ours |
 | `install.sh --pause` | host | Take Bluetooth back temporarily (until reboot) |
 | `install.sh --resume` | host | Hand it back to the VM |
 | `install.sh --uninstall` | either | Remove everything, restore normal Bluetooth |

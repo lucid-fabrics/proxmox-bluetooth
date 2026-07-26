@@ -115,6 +115,22 @@ bash -c "PBT_SOURCED=1 source ./install.sh; BIN='$WT/btproxy' get_binary; '$WT/b
 check "wrapper exits nonzero when btproxy quits (restart semantics)" 1 $? ""
 rm -rf "$WT"
 
+echo "== get_binary prefers a btproxy that is already installed =="
+GB=$(mktemp -d)
+printf '#!/bin/sh\nexit 0\n' > "$GB/btproxy"
+chmod +x "$GB/btproxy"
+# BIN points at a path that does not exist, so get_binary has to acquire something.
+# With a btproxy on PATH it must adopt that one rather than put our binary on the box.
+# BIN is assigned, not passed as a `BIN=x get_binary` prefix: a prefix assignment is
+# temp-scoped to the call, so get_binary repointing it would not be visible out here.
+# install.sh itself sets BIN as a plain global before calling, which is what this mimics.
+out=$(PATH="$GB:$PATH" bash -c "PBT_SOURCED=1 source ./install.sh; BIN='$GB/our-copy'; get_binary >/dev/null; echo \"BIN=\$BIN\"" 2>&1)
+rc=$?
+[ $rc = 0 ] && grep -q "BIN=$GB/btproxy" <<< "$out" && [ ! -e "$GB/our-copy" ] \
+    && ok "adopts the PATH btproxy and installs no copy of its own" \
+    || fail "get_binary did not adopt the PATH btproxy (rc=$rc, out=$out)"
+rm -rf "$GB"
+
 if [ "$(id -u)" = 0 ]; then
     echo "== CLI validation (root) =="
     out=$(bash install.sh --adapter 2>&1);      check "--adapter without value dies" 1 $? "$out" "needs a number"
