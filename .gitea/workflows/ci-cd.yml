@@ -54,8 +54,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install shellcheck
-        run: apt-get update -qq && apt-get install -y -qq shellcheck >/dev/null
+      - name: Install test dependencies
+        # acl/passwd/python3: the LXC proxy-socket ACL test proves the real
+        # permission boundary with throwaway system users and a raw connect() -
+        # skipped gracefully without these, but this job runs as root
+        # specifically so it doesn't have to skip.
+        run: apt-get update -qq && apt-get install -y -qq shellcheck acl passwd python3 >/dev/null
 
       - name: Run test suite
         # No sudo: this container already runs as root, so tests/run-tests.sh's

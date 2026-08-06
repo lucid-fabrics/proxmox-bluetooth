@@ -31,6 +31,10 @@ BUILD=0
 FW_FILE=/etc/proxmox-bluetooth/firewall.nft
 ALLOW_FILE=/etc/proxmox-bluetooth/allow
 LXC_CTID=""
+# Overridable for tests, same idea as PBT_SYS_BT for list_adapters: lets the
+# LXC conf-scanning logic run against a fixture directory instead of a real
+# Proxmox host.
+LXC_DIR="${PBT_LXC_DIR:-/etc/pve/lxc}"
 # Mounted at /mnt/pbt/, NOT under /run/: the container's systemd mounts a fresh
 # tmpfs over /run at boot, which shadows anything bound there. And NOT over
 # /run/dbus/ (what most online recipes do), which would silently break every
@@ -293,7 +297,7 @@ check() {
 }
 
 server() {
-    if [ -f "$PROXY_UNIT" ] || grep -qF "$LXC_MOUNT" /etc/pve/lxc/*.conf 2>/dev/null; then
+    if [ -f "$PROXY_UNIT" ] || grep -qF "$LXC_MOUNT" "$LXC_DIR"/*.conf 2>/dev/null; then
         die "This host shares its Bluetooth with LXC container(s) over D-Bus (pbt-dbus-proxy),
   which needs host bluetoothd running - and the VM bridge stops it. Remove the
   LXC share(s) first: $(self) --lxc-remove <ctid>"
@@ -510,7 +514,7 @@ status() {
         fi
     fi
     local lconf lid
-    for lconf in /etc/pve/lxc/*.conf; do
+    for lconf in "$LXC_DIR"/*.conf; do
         [ -f "$lconf" ] || continue
         grep -qF "$LXC_MOUNT" "$lconf" || continue
         any=1
@@ -655,7 +659,7 @@ lxc_conf_remove_share() {
 # a sibling's still-active grant just because they share a uid.
 lxc_sharing_uids() {
     local c uid seen=" " out=""
-    for c in /etc/pve/lxc/*.conf; do
+    for c in "$LXC_DIR"/*.conf; do
         [ -f "$c" ] || continue
         lxc_conf_has_share "$c" || continue
         uid=$(container_mapped_uid "$c")
@@ -677,7 +681,7 @@ lxc_sharing_uids() {
 # called for.
 lxc_restart_sharing_containers() {
     local c ctid
-    for c in /etc/pve/lxc/*.conf; do
+    for c in "$LXC_DIR"/*.conf; do
         [ -f "$c" ] || continue
         lxc_conf_has_share "$c" || continue
         ctid=$(basename "$c" .conf)
@@ -729,7 +733,7 @@ EOF
 # why this mode and the VM bridge are mutually exclusive on one host: the bridge
 # works by stopping host bluetoothd and taking the chip.
 lxc_share() {
-    local ctid="$1" conf="/etc/pve/lxc/$1.conf"
+    local ctid="$1" conf="$LXC_DIR/$1.conf"
     command -v pct >/dev/null 2>&1 || die "--lxc needs a Proxmox host (pct not found)."
     [ -f "$conf" ] || die "No LXC container $ctid on this host ($conf not found)."
     if [ -f /etc/systemd/system/btproxy-server.service ]; then
@@ -805,7 +809,7 @@ lxc_share() {
 }
 
 lxc_remove() {
-    local ctid="$1" conf="/etc/pve/lxc/$1.conf"
+    local ctid="$1" conf="$LXC_DIR/$1.conf"
     command -v pct >/dev/null 2>&1 || die "--lxc-remove needs a Proxmox host (pct not found)."
     [ -f "$conf" ] || die "No LXC container $ctid on this host ($conf not found)."
     lxc_conf_remove_share "$conf" || die "Container $ctid has no D-Bus share to remove."
@@ -813,7 +817,7 @@ lxc_remove() {
     # The proxy stays up while any other container still uses the share - but its
     # unit has to be regenerated and restarted so ExecStartPost stops granting
     # this container's uid.
-    if grep -qF "$LXC_MOUNT" /etc/pve/lxc/*.conf 2>/dev/null; then
+    if grep -qF "$LXC_MOUNT" "$LXC_DIR"/*.conf 2>/dev/null; then
         write_proxy_unit
         systemctl daemon-reload
         systemctl restart pbt-dbus-proxy 2>/dev/null || true
@@ -849,7 +853,7 @@ uninstall() {
     rm -rf /etc/proxmox-bluetooth
     # LXC D-Bus shares: strip our mount line from every container config.
     local c
-    for c in /etc/pve/lxc/*.conf; do
+    for c in "$LXC_DIR"/*.conf; do
         [ -f "$c" ] || continue
         if lxc_conf_has_share "$c"; then
             lxc_conf_remove_share "$c"

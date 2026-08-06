@@ -190,6 +190,138 @@ rc=$?
     || fail "get_binary did not adopt the PATH btproxy (rc=$rc, out=$out)"
 rm -rf "$GB"
 
+echo "== lxc_sharing_uids: dedups across containers sharing the same mapped uid =="
+LFIX=$(mktemp -d)
+printf 'unprivileged: 1\nlxc.idmap: u 0 231072 65536\nlxc.mount.entry: /run/pbt mnt/pbt none bind,ro,create=dir 0 0\n' > "$LFIX/301.conf"
+printf 'unprivileged: 1\nlxc.idmap: u 0 231072 65536\nlxc.mount.entry: /run/pbt mnt/pbt none bind,ro,create=dir 0 0\n' > "$LFIX/302.conf"
+printf 'unprivileged: 1\nlxc.idmap: u 0 341072 65536\nlxc.mount.entry: /run/pbt mnt/pbt none bind,ro,create=dir 0 0\n' > "$LFIX/303.conf"
+printf 'unprivileged: 1\n' > "$LFIX/304.conf"   # not sharing - must be excluded
+out=$(PBT_LXC_DIR="$LFIX" bash -c 'PBT_SOURCED=1 source ./install.sh; lxc_sharing_uids')
+check "two containers with the SAME mapped uid collapse to one entry" 0 $? "$out" "^ 231072 341072 *$"
+rm -rf "$LFIX"
+
+echo "== write_proxy_unit: generated ExecStartPost carries exactly the sharing uids =="
+LFIX=$(mktemp -d)
+printf 'unprivileged: 1\nlxc.idmap: u 0 231072 65536\nlxc.mount.entry: /run/pbt mnt/pbt none bind,ro,create=dir 0 0\n' > "$LFIX/301.conf"
+UNIT=$(mktemp)
+PBT_LXC_DIR="$LFIX" bash -c "PBT_SOURCED=1 source ./install.sh; PROXY_UNIT='$UNIT'; write_proxy_unit"
+grep -q 'RuntimeDirectoryMode=0750' "$UNIT" && ok "unit pins the directory to 0750 (no 'other' access)" \
+    || fail "RuntimeDirectoryMode missing or changed from 0750"
+grep -q 'UMask=0177' "$UNIT" && ok "unit pins the socket UMask to 0177 (root-only base perms)" \
+    || fail "UMask missing or changed from 0177"
+grep -q 'for u in 231072;' "$UNIT" && ok "ExecStartPost's uid list matches the one sharing container" \
+    || fail "ExecStartPost does not carry the expected uid list: $(grep ExecStartPost "$UNIT")"
+rm -f "$UNIT"; rm -rf "$LFIX"
+
+echo "== lxc_restart_sharing_containers: restarts exactly the sharing+running containers =="
+LFIX=$(mktemp -d)
+printf 'unprivileged: 1\nlxc.mount.entry: /run/pbt mnt/pbt none bind,ro,create=dir 0 0\n' > "$LFIX/401.conf"  # sharing, running
+printf 'unprivileged: 1\nlxc.mount.entry: /run/pbt mnt/pbt none bind,ro,create=dir 0 0\n' > "$LFIX/402.conf"  # sharing, stopped
+printf 'unprivileged: 1\n' > "$LFIX/403.conf"                                                                 # not sharing, running
+PT=$(mktemp -d)
+PCT_LOG="$PT/calls.log"
+# Fake `pct` that logs every call and reports 401/403 as running, 402 as stopped -
+# same technique the wrapper-behavior tests above use for a fake btproxy.
+cat > "$PT/pct" << EOF
+#!/bin/bash
+echo "\$@" >> "$PCT_LOG"
+if [ "\$1" = status ]; then
+    case "\$2" in
+        401|403) echo "status: running" ;;
+        402)     echo "status: stopped" ;;
+    esac
+fi
+exit 0
+EOF
+chmod +x "$PT/pct"
+PATH="$PT:$PATH" PBT_LXC_DIR="$LFIX" bash -c 'PBT_SOURCED=1 source ./install.sh; lxc_restart_sharing_containers'
+calls=$(cat "$PCT_LOG")
+grep -q "^stop 401$" <<< "$calls" && grep -q "^start 401$" <<< "$calls" \
+    && ok "restarts a sharing+running container (401)" || fail "did not restart 401 (sharing, running):
+$calls"
+grep -q "^stop 402" <<< "$calls" \
+    && fail "tried to restart a STOPPED sharing container (402) - should have skipped it:
+$calls" \
+    || ok "skips a sharing container that is stopped (402)"
+grep -q "^stop 403" <<< "$calls" \
+    && fail "restarted a container NOT sharing the proxy (403) - should never have touched it:
+$calls" \
+    || ok "never touches a running container that isn't sharing (403)"
+rm -rf "$LFIX" "$PT"
+
+if [ "$(id -u)" = 0 ] && command -v setfacl >/dev/null 2>&1 && command -v useradd >/dev/null 2>&1 \
+   && command -v userdel >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    echo "== LXC proxy socket ACL: proves the real permission boundary (not a re-implementation) =="
+    # This is the one part of the LXC feature that IS testable without a real
+    # Proxmox host: the ACL write_proxy_unit's ExecStartPost applies is plain
+    # Unix DAC/ACL enforcement - LXC only supplies the "connecting uid" via its
+    # own user namespace mapping on a real deployment, and that mapping is
+    # already covered by container_mapped_uid's own tests above. Extracts the
+    # REAL ExecStartPost line (not a copy of its logic) and runs it against a
+    # real bound socket, then proves both directions with a raw connect():
+    # the allowed uid gets through, an unrelated uid gets EACCES. Touches the
+    # real /run/pbt path on purpose - this block only runs as root, and only
+    # somewhere expendable (CI's ephemeral container), matching the existing
+    # root-gated tests below which already assume that, not a bare dev box.
+    useradd --system --no-create-home --shell /usr/sbin/nologin pbt-test-allowed 2>/dev/null
+    useradd --system --no-create-home --shell /usr/sbin/nologin pbt-test-other 2>/dev/null
+    ALLOWED_UID=$(id -u pbt-test-allowed)
+    OTHER_UID=$(id -u pbt-test-other)
+
+    LFIX=$(mktemp -d)
+    printf 'unprivileged: 1\nlxc.idmap: u 0 %s 65536\nlxc.mount.entry: /run/pbt mnt/pbt none bind,ro,create=dir 0 0\n' \
+        "$ALLOWED_UID" > "$LFIX/501.conf"
+    UNIT=$(mktemp)
+    PBT_LXC_DIR="$LFIX" bash -c "PBT_SOURCED=1 source ./install.sh; PROXY_UNIT='$UNIT'; write_proxy_unit"
+    EXEC_START_POST=$(grep '^ExecStartPost=' "$UNIT" | sed 's/^ExecStartPost=//')
+
+    rm -rf /run/pbt
+    mkdir -p /run/pbt
+    chown root:root /run/pbt
+    chmod 0750 /run/pbt
+
+    python3 -c "
+import socket, os
+os.umask(0o177)
+p = '/run/pbt/bus'
+if os.path.exists(p): os.unlink(p)
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(p)
+s.listen(1)
+import time; time.sleep(15)
+" &
+LISTENER_PID=$!
+sleep 0.5
+
+sh -c "$EXEC_START_POST"
+
+connect_as() {
+    runuser -u "$1" -- python3 -c "
+import socket
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    s.connect('/run/pbt/bus')
+    print('CONNECTED')
+except PermissionError as e:
+    print('DENIED:', e)
+"
+}
+
+out=$(connect_as pbt-test-allowed)
+[[ "$out" == CONNECTED* ]] && ok "the sharing container's mapped uid CAN connect" \
+    || fail "allowed uid $ALLOWED_UID could not connect: $out"
+
+out=$(connect_as pbt-test-other)
+[[ "$out" == DENIED* ]] && ok "an unrelated local uid is DENIED (real EACCES, not a policy simulation)" \
+    || fail "unrelated uid $OTHER_UID should have been denied but got: $out"
+
+kill "$LISTENER_PID" 2>/dev/null; wait "$LISTENER_PID" 2>/dev/null
+rm -rf /run/pbt "$LFIX"; rm -f "$UNIT"
+userdel pbt-test-allowed 2>/dev/null; userdel pbt-test-other 2>/dev/null
+else
+    echo "== LXC proxy socket ACL test skipped (needs root + setfacl + useradd + python3) =="
+fi
+
 if [ "$(id -u)" = 0 ]; then
     echo "== CLI validation (root) =="
     out=$(bash install.sh --adapter 2>&1);      check "--adapter without value dies" 1 $? "$out" "needs a number"
