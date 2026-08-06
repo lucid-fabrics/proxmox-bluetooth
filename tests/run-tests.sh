@@ -68,7 +68,7 @@ case "$out" in
 esac
 
 echo "== test seam =="
-out=$(bash -c 'PBT_SOURCED=1 source ./install.sh && declare -F list_adapters get_binary pause resume probe_host report lxc_share lxc_remove container_mapped_uid lxc_conf_has_share lxc_conf_add_share lxc_conf_remove_share refresh_lxc_acl >/dev/null && echo SEAM_OK' 2>&1)
+out=$(bash -c 'PBT_SOURCED=1 source ./install.sh && declare -F list_adapters get_binary pause resume probe_host report lxc_share lxc_remove container_mapped_uid lxc_conf_has_share lxc_conf_add_share lxc_conf_remove_share lxc_sharing_uids lxc_restart_sharing_containers write_proxy_unit >/dev/null && echo SEAM_OK' 2>&1)
 check "sourcing loads functions without acting" 0 $? "$out" "SEAM_OK"
 
 echo "== LXC conf mount-line helpers =="

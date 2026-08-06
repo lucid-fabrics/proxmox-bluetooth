@@ -620,7 +620,7 @@ resume() {
 # The specific host uid that "root inside this container" maps to. Privileged
 # containers have no separate user namespace, so their root really is host uid
 # 0. Unprivileged containers get whatever range their own lxc.idmap says, or
-# Proxmox's default subuid pool if the conf leaves it implicit. refresh_lxc_acl
+# Proxmox's default subuid pool if the conf leaves it implicit. write_proxy_unit
 # grants exactly this uid access to the proxy socket, instead of every local
 # user on the host.
 container_mapped_uid() {
@@ -648,25 +648,77 @@ lxc_conf_remove_share() {
     grep -vF "$LXC_MOUNT" "$1" > "$1.pbt-tmp" && mv "$1.pbt-tmp" "$1"
 }
 
-# Rebuilds the D-Bus proxy socket's ACL from scratch against every container
-# CURRENTLY sharing it, rather than incrementally adding/removing one entry -
-# Proxmox's default subuid pool means most unprivileged containers on a host
-# map to the SAME host uid, so removing one container's grant could otherwise
-# revoke a sibling's still-active access. Quietly no-ops if the socket or
-# setfacl isn't there yet; callers already surface that failure separately.
-refresh_lxc_acl() {
-    [ -S /run/pbt/bus ] || return 0
-    command -v setfacl >/dev/null 2>&1 || return 0
-    setfacl -b /run/pbt/bus 2>/dev/null || true
-    local c uid seen=" "
+# Space-separated, deduped mapped uids of every container CURRENTLY sharing
+# the proxy. Proxmox's default subuid pool means most unprivileged containers
+# on a host map to the SAME host uid, so this is computed fresh each time
+# rather than tracked incrementally - removing one container must not revoke
+# a sibling's still-active grant just because they share a uid.
+lxc_sharing_uids() {
+    local c uid seen=" " out=""
     for c in /etc/pve/lxc/*.conf; do
         [ -f "$c" ] || continue
         lxc_conf_has_share "$c" || continue
         uid=$(container_mapped_uid "$c")
         case "$seen" in *" $uid "*) continue ;; esac
         seen="$seen$uid "
-        setfacl -m "u:$uid:rw" /run/pbt/bus 2>/dev/null || true
+        out="$out $uid"
     done
+    echo "$out"
+}
+
+# Restarts every RUNNING container that currently shares the proxy. Needed
+# after any change that restarts pbt-dbus-proxy itself: systemd tears down and
+# recreates RuntimeDirectory fresh on each service start, and an already
+# established LXC bind mount does not follow that - confirmed live (a
+# container mounted before a proxy restart sees "No such file or directory"
+# at /mnt/pbt afterward, from a socket that exists and is correctly permissioned
+# on the host, until that specific container is itself restarted). Every
+# sharing container needs this, not just whichever one --lxc/--lxc-remove was
+# called for.
+lxc_restart_sharing_containers() {
+    local c ctid
+    for c in /etc/pve/lxc/*.conf; do
+        [ -f "$c" ] || continue
+        lxc_conf_has_share "$c" || continue
+        ctid=$(basename "$c" .conf)
+        pct status "$ctid" 2>/dev/null | grep -q running || continue
+        pct stop "$ctid" >/dev/null 2>&1 && pct start "$ctid" >/dev/null 2>&1
+    done
+}
+
+# (Re)writes the proxy's systemd unit with the CURRENT sharing uid list baked
+# into ExecStartPost, rather than granting access with a one-off `setfacl`
+# call from install.sh at share-time. RuntimeDirectory is recreated fresh
+# (wiping any ACL) on every service start, including an unattended crash
+# restart or a host reboot - and install.sh itself is usually gone by then
+# (`curl | bash` leaves nothing on disk), so nothing else would be left to
+# reapply the grants. Baking them into the unit makes them durable across
+# restarts on their own. The ExecStartPost script waits for the socket first:
+# it can run before xdg-dbus-proxy finishes creating it.
+write_proxy_unit() {
+    local uids; uids=$(lxc_sharing_uids)
+    cat > "$PROXY_UNIT" <<EOF
+[Unit]
+Description=Filtered D-Bus proxy exposing org.bluez to LXC containers (proxmox-bluetooth)
+Requires=dbus.service
+After=dbus.service bluetooth.service
+Before=pve-guests.service
+
+[Service]
+RuntimeDirectory=pbt
+RuntimeDirectoryMode=0750
+UMask=0177
+ExecStart=$(command -v xdg-dbus-proxy) unix:path=/run/dbus/system_bus_socket /run/pbt/bus --filter --talk=org.bluez
+# x on the directory (search/traverse only, no listing) plus rw on the socket
+# itself - a container needs both to reach a file it already knows the name
+# of, without being able to enumerate what else might be in there.
+ExecStartPost=/bin/sh -c 'for i in \$(seq 1 30); do [ -S /run/pbt/bus ] && break; sleep 0.2; done; command -v setfacl >/dev/null || exit 0; setfacl -b /run/pbt; setfacl -b /run/pbt/bus; for u in$uids; do setfacl -m u:\$u:x /run/pbt; setfacl -m u:\$u:rw /run/pbt/bus; done'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
 }
 
 # LXC needs a different mechanism than VMs: the kernel only allows AF_BLUETOOTH
@@ -695,7 +747,7 @@ lxc_share() {
         apt-get install -y -qq xdg-dbus-proxy || die "Could not install xdg-dbus-proxy on the host."
     fi
     # setfacl/getfacl: scopes the proxy socket to exactly the sharing containers'
-    # mapped uids (refresh_lxc_acl below) instead of leaving it open to every
+    # mapped uids (write_proxy_unit below) instead of leaving it open to every
     # local user on the host.
     command -v setfacl >/dev/null 2>&1 || apt-get install -y -qq acl || die "Could not install acl (setfacl) on the host."
     systemctl enable --now bluetooth 2>/dev/null || die "Could not start bluetooth.service on the host."
@@ -708,42 +760,28 @@ lxc_share() {
     # container the ENTIRE system bus. xdg-dbus-proxy (flatpak's tool, built for
     # exactly this cross-userns case) authenticates as root too, but filters the
     # bus down to org.bluez - the container can talk to Bluetooth and nothing else.
-    # The socket itself starts root-only (UMask=0177 below); refresh_lxc_acl then
+    # The socket itself starts root-only; write_proxy_unit's ExecStartPost then
     # grants read/write to exactly the sharing containers' mapped uids, so no
     # OTHER local user or process on the host can reach it either.
-    cat > "$PROXY_UNIT" <<EOF
-[Unit]
-Description=Filtered D-Bus proxy exposing org.bluez to LXC containers (proxmox-bluetooth)
-Requires=dbus.service
-After=dbus.service bluetooth.service
-Before=pve-guests.service
-
-[Service]
-RuntimeDirectory=pbt
-RuntimeDirectoryMode=0750
-UMask=0177
-ExecStart=$(command -v xdg-dbus-proxy) unix:path=/run/dbus/system_bus_socket /run/pbt/bus --filter --talk=org.bluez
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable --now pbt-dbus-proxy || die "Could not start the D-Bus proxy. Run: journalctl -u pbt-dbus-proxy"
-    sleep 1
-    [ -S /run/pbt/bus ] || die "The D-Bus proxy did not create /run/pbt/bus. Run: journalctl -u pbt-dbus-proxy"
     if lxc_conf_has_share "$conf"; then
         say "Container $ctid already has the D-Bus share."
     else
         lxc_conf_add_share "$conf"
         say "Added the D-Bus share to $conf"
     fi
-    refresh_lxc_acl
+    write_proxy_unit
+    systemctl daemon-reload
+    systemctl enable pbt-dbus-proxy >/dev/null 2>&1
+    # restart, not `enable --now`: on a re-run (adding a second container) the
+    # service is already active, and `--now` would leave the OLD ExecStartPost
+    # uid list in effect instead of picking up the one write_proxy_unit just
+    # regenerated.
+    systemctl restart pbt-dbus-proxy || die "Could not start the D-Bus proxy. Run: journalctl -u pbt-dbus-proxy"
+    sleep 1
+    [ -S /run/pbt/bus ] || die "The D-Bus proxy did not create /run/pbt/bus. Run: journalctl -u pbt-dbus-proxy"
+    say "Restarting sharing container(s) to pick up the fresh mount..."
+    lxc_restart_sharing_containers
     if pct status "$ctid" 2>/dev/null | grep -q running; then
-        say "Restarting container $ctid to apply the mount..."
-        pct stop "$ctid" >/dev/null && pct start "$ctid" >/dev/null \
-            || die "Could not restart container $ctid. Check: pct status $ctid"
         sleep 2
         if pct exec "$ctid" -- test -S /mnt/pbt/bus 2>/dev/null; then
             say "Host D-Bus socket is visible inside container $ctid."
@@ -772,9 +810,15 @@ lxc_remove() {
     [ -f "$conf" ] || die "No LXC container $ctid on this host ($conf not found)."
     lxc_conf_remove_share "$conf" || die "Container $ctid has no D-Bus share to remove."
     say "Removed the D-Bus share from $conf (restart the container to drop the mount)."
-    refresh_lxc_acl
-    # The proxy stays up while any other container still uses the share.
-    if ! grep -qF "$LXC_MOUNT" /etc/pve/lxc/*.conf 2>/dev/null; then
+    # The proxy stays up while any other container still uses the share - but its
+    # unit has to be regenerated and restarted so ExecStartPost stops granting
+    # this container's uid.
+    if grep -qF "$LXC_MOUNT" /etc/pve/lxc/*.conf 2>/dev/null; then
+        write_proxy_unit
+        systemctl daemon-reload
+        systemctl restart pbt-dbus-proxy 2>/dev/null || true
+        lxc_restart_sharing_containers
+    else
         systemctl disable --now pbt-dbus-proxy 2>/dev/null || true
         rm -f "$PROXY_UNIT"
         systemctl daemon-reload
