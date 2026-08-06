@@ -85,19 +85,25 @@ jobs:
           GH_REPO: lucid-fabrics/proxmox-bluetooth
         run: |
           set -eo pipefail
-          apt-get update -qq && apt-get install -y -qq --no-install-recommends openssh-client >/dev/null
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends openssh-client file >/dev/null
           [ -n "$GH_DEPLOY_KEY" ] || { echo "GH_DEPLOY_KEY not set"; exit 1; }
 
           # bin/btproxy-x86_64 is the one binary this repo intentionally ships
           # (pinned, checksummed, verified reproducible by GitHub's own CI). Refuse
           # to publish if any OTHER binary ever got tracked - that would be a leak,
-          # not a feature.
-          if git ls-files | grep -vxF 'bin/btproxy-x86_64' \
-             | grep -qiE '\.(exe|dylib|so|bin|dmg|pkg|zip|tar\.gz)$'; then
-            echo "Refusing to publish: an unexpected binary artifact is tracked"
-            git ls-files | grep -vxF 'bin/btproxy-x86_64' | grep -iE '\.(exe|dylib|so|bin|dmg|pkg|zip|tar\.gz)$'
-            exit 1
-          fi
+          # not a feature. Content-sniffed with `file`, not matched by extension:
+          # an extension-only check would miss a second extension-less binary -
+          # exactly the shape of file this repo already ships one of.
+          while IFS= read -r f; do
+            [ "$f" = "bin/btproxy-x86_64" ] && continue
+            [ -f "$f" ] || continue
+            kind=$(file -b "$f")
+            case "$kind" in
+              *ELF*|*executable*|*"shared object"*|*Mach-O*|*PE32*|*archive*)
+                echo "Refusing to publish: $f ($kind) looks like a binary and isn't the allowlisted one"
+                exit 1 ;;
+            esac
+          done < <(git ls-files)
 
           # Same idea for secrets/credentials.
           if git ls-files | grep -qE '\.(pem|key|p12|p8)$|(^|/)\.env$|id_(rsa|ed25519)$'; then
@@ -121,6 +127,16 @@ jobs:
           git push github "HEAD:refs/heads/main"
           git push github --tags
           echo "=== published $(git rev-parse --short HEAD) to github.com/${GH_REPO} ==="
+
+          # release.yml (on GitHub) creates new version tags directly there, and
+          # those never flow back on their own - without this, Gitea's tag list
+          # silently drifts stale relative to GitHub's. Pull anything GitHub has
+          # that Gitea doesn't, then push the merged set back to origin (Gitea).
+          # Uses the checkout step's own persisted credentials for origin - this
+          # half never touches GitHub, so it needs no deploy key.
+          git fetch --tags github
+          git push origin --tags
+          echo "=== synced tags back to Gitea ==="
 
       - name: Notify Telegram (failures only)
         if: failure()

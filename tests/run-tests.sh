@@ -68,8 +68,52 @@ case "$out" in
 esac
 
 echo "== test seam =="
-out=$(bash -c 'PBT_SOURCED=1 source ./install.sh && declare -F list_adapters get_binary pause resume probe_host report lxc_share lxc_remove >/dev/null && echo SEAM_OK' 2>&1)
+out=$(bash -c 'PBT_SOURCED=1 source ./install.sh && declare -F list_adapters get_binary pause resume probe_host report lxc_share lxc_remove container_mapped_uid lxc_conf_has_share lxc_conf_add_share lxc_conf_remove_share refresh_lxc_acl >/dev/null && echo SEAM_OK' 2>&1)
 check "sourcing loads functions without acting" 0 $? "$out" "SEAM_OK"
+
+echo "== LXC conf mount-line helpers =="
+FIXCONF=$(mktemp)
+printf 'arch: amd64\nhostname: test\nunprivileged: 1\n' > "$FIXCONF"
+
+bash -c "PBT_SOURCED=1 source ./install.sh; lxc_conf_has_share '$FIXCONF'"
+[ $? = 1 ] && ok "fresh conf has no share" || fail "fresh conf incorrectly reports a share"
+
+bash -c "PBT_SOURCED=1 source ./install.sh; lxc_conf_add_share '$FIXCONF'"
+grep -qF "lxc.mount.entry: /run/pbt mnt/pbt none bind,ro,create=dir 0 0" "$FIXCONF" \
+    && ok "lxc_conf_add_share appends the mount line" || fail "mount line missing after add"
+
+before=$(wc -l < "$FIXCONF")
+bash -c "PBT_SOURCED=1 source ./install.sh; lxc_conf_add_share '$FIXCONF'"
+after=$(wc -l < "$FIXCONF")
+[ "$before" = "$after" ] && ok "lxc_conf_add_share is idempotent (no duplicate line)" \
+    || fail "add_share duplicated the line ($before -> $after lines)"
+
+bash -c "PBT_SOURCED=1 source ./install.sh; lxc_conf_has_share '$FIXCONF'"
+[ $? = 0 ] && ok "conf with mount line reports a share" || fail "has_share false negative after add"
+
+bash -c "PBT_SOURCED=1 source ./install.sh; lxc_conf_remove_share '$FIXCONF'"
+grep -q "unprivileged: 1" "$FIXCONF" && ok "remove_share preserves unrelated lines" || fail "remove_share clobbered unrelated content"
+grep -qF "lxc.mount.entry: /run/pbt" "$FIXCONF" && fail "remove_share left the mount line behind" || ok "remove_share strips the mount line"
+
+bash -c "PBT_SOURCED=1 source ./install.sh; lxc_conf_remove_share '$FIXCONF'"
+[ $? = 1 ] && ok "remove_share on an already-clean conf returns failure (nothing to remove)" \
+    || fail "remove_share should fail when there is nothing to remove"
+rm -f "$FIXCONF"
+
+echo "== container_mapped_uid =="
+FIXCONF2=$(mktemp)
+printf 'unprivileged: 0\n' > "$FIXCONF2"
+out=$(bash -c "PBT_SOURCED=1 source ./install.sh; container_mapped_uid '$FIXCONF2'")
+check "privileged container maps to host uid 0" 0 $? "$out" "^0$"
+
+printf 'unprivileged: 1\nlxc.idmap: u 0 231072 65536\nlxc.idmap: g 0 231072 65536\n' > "$FIXCONF2"
+out=$(bash -c "PBT_SOURCED=1 source ./install.sh; container_mapped_uid '$FIXCONF2'")
+check "unprivileged container reads its own lxc.idmap base uid" 0 $? "$out" "^231072$"
+
+printf 'unprivileged: 1\n' > "$FIXCONF2"
+out=$(bash -c "PBT_SOURCED=1 source ./install.sh; container_mapped_uid '$FIXCONF2'")
+check "unprivileged container without an idmap falls back to the default subuid base" 0 $? "$out" "^100000$"
+rm -f "$FIXCONF2"
 
 echo "== probe_host classifies connection failures =="
 if command -v timeout >/dev/null; then

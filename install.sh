@@ -293,6 +293,11 @@ check() {
 }
 
 server() {
+    if [ -f "$PROXY_UNIT" ] || grep -qF "$LXC_MOUNT" /etc/pve/lxc/*.conf 2>/dev/null; then
+        die "This host shares its Bluetooth with LXC container(s) over D-Bus (pbt-dbus-proxy),
+  which needs host bluetoothd running - and the VM bridge stops it. Remove the
+  LXC share(s) first: $(self) --lxc-remove <ctid>"
+    fi
     get_binary
     list_adapters >/dev/null || die "No Bluetooth adapter found on this machine."
     local count; count=$(list_adapters | wc -l)
@@ -612,6 +617,58 @@ resume() {
     say "Sharing resumed. The VM reconnects by itself within a few seconds."
 }
 
+# The specific host uid that "root inside this container" maps to. Privileged
+# containers have no separate user namespace, so their root really is host uid
+# 0. Unprivileged containers get whatever range their own lxc.idmap says, or
+# Proxmox's default subuid pool if the conf leaves it implicit. refresh_lxc_acl
+# grants exactly this uid access to the proxy socket, instead of every local
+# user on the host.
+container_mapped_uid() {
+    local conf="$1"
+    if ! grep -q '^unprivileged: 1' "$conf" 2>/dev/null; then
+        echo 0
+        return
+    fi
+    local base
+    base=$(awk '/^lxc\.idmap/ && / u 0 / {print $(NF-1); exit}' "$conf" 2>/dev/null || true)
+    [ -n "$base" ] || base=$(awk -F: '$1=="root" {print $2; exit}' /etc/subuid 2>/dev/null || true)
+    [ -n "$base" ] || base=100000
+    echo "$base"
+}
+
+lxc_conf_has_share() { grep -qF "$LXC_MOUNT" "$1" 2>/dev/null; }
+
+lxc_conf_add_share() {
+    lxc_conf_has_share "$1" && return 0
+    printf '%s\n' "$LXC_MOUNT" >> "$1"
+}
+
+lxc_conf_remove_share() {
+    lxc_conf_has_share "$1" || return 1
+    grep -vF "$LXC_MOUNT" "$1" > "$1.pbt-tmp" && mv "$1.pbt-tmp" "$1"
+}
+
+# Rebuilds the D-Bus proxy socket's ACL from scratch against every container
+# CURRENTLY sharing it, rather than incrementally adding/removing one entry -
+# Proxmox's default subuid pool means most unprivileged containers on a host
+# map to the SAME host uid, so removing one container's grant could otherwise
+# revoke a sibling's still-active access. Quietly no-ops if the socket or
+# setfacl isn't there yet; callers already surface that failure separately.
+refresh_lxc_acl() {
+    [ -S /run/pbt/bus ] || return 0
+    command -v setfacl >/dev/null 2>&1 || return 0
+    setfacl -b /run/pbt/bus 2>/dev/null || true
+    local c uid seen=" "
+    for c in /etc/pve/lxc/*.conf; do
+        [ -f "$c" ] || continue
+        lxc_conf_has_share "$c" || continue
+        uid=$(container_mapped_uid "$c")
+        case "$seen" in *" $uid "*) continue ;; esac
+        seen="$seen$uid "
+        setfacl -m "u:$uid:rw" /run/pbt/bus 2>/dev/null || true
+    done
+}
+
 # LXC needs a different mechanism than VMs: the kernel only allows AF_BLUETOOTH
 # sockets in the initial network namespace (bt_sock_create rejects every other
 # netns with EAFNOSUPPORT), so BlueZ can never run inside a container, no matter
@@ -637,6 +694,10 @@ lxc_share() {
         say "Installing xdg-dbus-proxy on the host..."
         apt-get install -y -qq xdg-dbus-proxy || die "Could not install xdg-dbus-proxy on the host."
     fi
+    # setfacl/getfacl: scopes the proxy socket to exactly the sharing containers'
+    # mapped uids (refresh_lxc_acl below) instead of leaving it open to every
+    # local user on the host.
+    command -v setfacl >/dev/null 2>&1 || apt-get install -y -qq acl || die "Could not install acl (setfacl) on the host."
     systemctl enable --now bluetooth 2>/dev/null || die "Could not start bluetooth.service on the host."
     list_adapters >/dev/null \
         || warn "No Bluetooth adapter visible on the host right now. The share still gets set up; plug in an adapter (or run --check) when ready."
@@ -647,6 +708,9 @@ lxc_share() {
     # container the ENTIRE system bus. xdg-dbus-proxy (flatpak's tool, built for
     # exactly this cross-userns case) authenticates as root too, but filters the
     # bus down to org.bluez - the container can talk to Bluetooth and nothing else.
+    # The socket itself starts root-only (UMask=0177 below); refresh_lxc_acl then
+    # grants read/write to exactly the sharing containers' mapped uids, so no
+    # OTHER local user or process on the host can reach it either.
     cat > "$PROXY_UNIT" <<EOF
 [Unit]
 Description=Filtered D-Bus proxy exposing org.bluez to LXC containers (proxmox-bluetooth)
@@ -656,8 +720,8 @@ Before=pve-guests.service
 
 [Service]
 RuntimeDirectory=pbt
-RuntimeDirectoryMode=0755
-UMask=0000
+RuntimeDirectoryMode=0750
+UMask=0177
 ExecStart=$(command -v xdg-dbus-proxy) unix:path=/run/dbus/system_bus_socket /run/pbt/bus --filter --talk=org.bluez
 Restart=always
 RestartSec=3
@@ -669,12 +733,13 @@ EOF
     systemctl enable --now pbt-dbus-proxy || die "Could not start the D-Bus proxy. Run: journalctl -u pbt-dbus-proxy"
     sleep 1
     [ -S /run/pbt/bus ] || die "The D-Bus proxy did not create /run/pbt/bus. Run: journalctl -u pbt-dbus-proxy"
-    if grep -qF "$LXC_MOUNT" "$conf"; then
+    if lxc_conf_has_share "$conf"; then
         say "Container $ctid already has the D-Bus share."
     else
-        printf '%s\n' "$LXC_MOUNT" >> "$conf"
+        lxc_conf_add_share "$conf"
         say "Added the D-Bus share to $conf"
     fi
+    refresh_lxc_acl
     if pct status "$ctid" 2>/dev/null | grep -q running; then
         say "Restarting container $ctid to apply the mount..."
         pct stop "$ctid" >/dev/null && pct start "$ctid" >/dev/null \
@@ -705,9 +770,9 @@ lxc_remove() {
     local ctid="$1" conf="/etc/pve/lxc/$1.conf"
     command -v pct >/dev/null 2>&1 || die "--lxc-remove needs a Proxmox host (pct not found)."
     [ -f "$conf" ] || die "No LXC container $ctid on this host ($conf not found)."
-    grep -qF "$LXC_MOUNT" "$conf" || die "Container $ctid has no D-Bus share to remove."
-    grep -vF "$LXC_MOUNT" "$conf" > "$conf.pbt-tmp" && mv "$conf.pbt-tmp" "$conf"
+    lxc_conf_remove_share "$conf" || die "Container $ctid has no D-Bus share to remove."
     say "Removed the D-Bus share from $conf (restart the container to drop the mount)."
+    refresh_lxc_acl
     # The proxy stays up while any other container still uses the share.
     if ! grep -qF "$LXC_MOUNT" /etc/pve/lxc/*.conf 2>/dev/null; then
         systemctl disable --now pbt-dbus-proxy 2>/dev/null || true
@@ -742,8 +807,8 @@ uninstall() {
     local c
     for c in /etc/pve/lxc/*.conf; do
         [ -f "$c" ] || continue
-        if grep -qF "$LXC_MOUNT" "$c"; then
-            grep -vF "$LXC_MOUNT" "$c" > "$c.pbt-tmp" && mv "$c.pbt-tmp" "$c"
+        if lxc_conf_has_share "$c"; then
+            lxc_conf_remove_share "$c"
             warn "Removed D-Bus share from LXC $(basename "$c" .conf) - restart that container to drop the mount."
         fi
     done
