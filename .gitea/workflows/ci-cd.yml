@@ -42,19 +42,20 @@ jobs:
     name: 'CI · shellcheck + test suite'
     runs-on: self-hosted
     container:
-      # Debian 12 (bookworm) on purpose: it matches the Proxmox 8 target this
-      # project ships to, same as GitHub's verify-binary.yml container.
-      image: debian:bookworm
+      # node:*-bookworm, not bare debian:bookworm: act_runner's actions/checkout is
+      # a Node-based action and needs a `node` binary in the container to run at
+      # all (confirmed the hard way - bare debian:bookworm fails checkout with
+      # "node: executable file not found in $PATH" before a single repo step
+      # runs). The bookworm base still matches the Proxmox 8 target this project
+      # ships to, same as GitHub's verify-binary.yml container; only the base
+      # image gains a Node runtime neither this job nor the test suite otherwise
+      # touches. node:*-bookworm ships git already (unlike bare debian:bookworm).
+      image: node:22-bookworm
     steps:
-      # Bare debian:bookworm ships neither - actions/checkout shells out to git,
-      # so this has to happen before that step, not after.
-      - name: Install git (actions/checkout needs it; bare debian:bookworm lacks it)
-        run: apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null
-
       - uses: actions/checkout@v4
 
       - name: Install shellcheck
-        run: apt-get install -y -qq shellcheck >/dev/null
+        run: apt-get update -qq && apt-get install -y -qq shellcheck >/dev/null
 
       - name: Run test suite
         # No sudo: this container already runs as root, so tests/run-tests.sh's
@@ -67,13 +68,9 @@ jobs:
     if: github.event_name == 'push'
     runs-on: self-hosted
     container:
-      image: debian:bookworm
+      # See ci's container comment: needs Node for actions/checkout to run at all.
+      image: node:22-bookworm
     steps:
-      # Same as ci's checkout step: bare debian:bookworm has no git, and
-      # actions/checkout needs it. openssh-client goes here too, for the push below.
-      - name: Install git + ssh (actions/checkout and the push below both need them)
-        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git openssh-client ca-certificates >/dev/null
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -88,6 +85,7 @@ jobs:
           GH_REPO: lucid-fabrics/proxmox-bluetooth
         run: |
           set -eo pipefail
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends openssh-client >/dev/null
           [ -n "$GH_DEPLOY_KEY" ] || { echo "GH_DEPLOY_KEY not set"; exit 1; }
 
           # bin/btproxy-x86_64 is the one binary this repo intentionally ships
