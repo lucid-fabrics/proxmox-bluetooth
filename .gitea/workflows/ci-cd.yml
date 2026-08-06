@@ -93,13 +93,18 @@ jobs:
           # to publish if any OTHER binary ever got tracked - that would be a leak,
           # not a feature. Content-sniffed with `file`, not matched by extension:
           # an extension-only check would miss a second extension-less binary -
-          # exactly the shape of file this repo already ships one of.
+          # exactly the shape of file this repo already ships one of. Matched on
+          # specific binary-format markers only, NOT bare "executable" - `file`
+          # calls any chmod +x script "...text executable" too (confirmed against
+          # every file this repo currently tracks: build.sh, install.sh and
+          # tests/run-tests.sh all say "shell script text executable", which a
+          # bare *executable* pattern would have flagged as a false positive).
           while IFS= read -r f; do
             [ "$f" = "bin/btproxy-x86_64" ] && continue
             [ -f "$f" ] || continue
             kind=$(file -b "$f")
             case "$kind" in
-              *ELF*|*executable*|*"shared object"*|*Mach-O*|*PE32*|*archive*)
+              *ELF*|*"shared object"*|*Mach-O*|*PE32*|*archive*)
                 echo "Refusing to publish: $f ($kind) looks like a binary and isn't the allowlisted one"
                 exit 1 ;;
             esac
