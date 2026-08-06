@@ -68,8 +68,23 @@ case "$out" in
 esac
 
 echo "== test seam =="
-out=$(bash -c 'PBT_SOURCED=1 source ./install.sh && declare -F list_adapters get_binary pause resume >/dev/null && echo SEAM_OK' 2>&1)
+out=$(bash -c 'PBT_SOURCED=1 source ./install.sh && declare -F list_adapters get_binary pause resume probe_host report lxc_share lxc_remove >/dev/null && echo SEAM_OK' 2>&1)
 check "sourcing loads functions without acting" 0 $? "$out" "SEAM_OK"
+
+echo "== probe_host classifies connection failures =="
+if command -v timeout >/dev/null; then
+    out=$(bash -c 'PBT_SOURCED=1 source ./install.sh; probe_host 127.0.0.1 1' 2>&1)
+    check "closed local port -> refused" 0 $? "$out" "refused"
+    python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",19700)); s.listen(1); time.sleep(10)' &
+    LPID=$!
+    sleep 1
+    out=$(bash -c 'PBT_SOURCED=1 source ./install.sh; probe_host 127.0.0.1 19700' 2>&1)
+    check "open local port -> open" 0 $? "$out" "open"
+    kill $LPID 2>/dev/null || true
+    wait $LPID 2>/dev/null || true
+else
+    echo "  skip: no timeout binary on this machine"
+fi
 
 echo "== list_adapters against fixture sysfs =="
 FIX=$(mktemp -d /tmp/pbt-usb-fixture.XXXXXX)   # path contains "usb" -> bus detection
@@ -148,6 +163,15 @@ if [ "$(id -u)" = 0 ]; then
     check "--adapter cannot swallow the next flag" 1 $? "$out" "needs a number"
     if systemd-detect-virt --quiet 2>/dev/null; then
         out=$(bash install.sh 2>&1);            check "auto mode on a VM refuses to act as host" 1 $? "$out" "looks like a VM"
+    fi
+    # --report must succeed on any machine, installed or not - it is the command
+    # users are told to run precisely when everything else is broken.
+    out=$(bash install.sh --report 2>&1);       check "--report always prints a bundle" 0 $? "$out" "proxmox-bluetooth report"
+    out=$(bash install.sh --lxc 2>&1);          check "--lxc without ID dies"          1 $? "$out" "needs a container ID"
+    out=$(bash install.sh --lxc abc 2>&1);      check "--lxc rejects non-numeric ID"   1 $? "$out" "needs a container ID"
+    if ! command -v pct >/dev/null; then
+        out=$(bash install.sh --lxc 105 2>&1);  check "--lxc off a Proxmox host dies cleanly" 1 $? "$out" "pct not found"
+        out=$(bash install.sh --lxc-remove 105 2>&1); check "--lxc-remove off a Proxmox host dies cleanly" 1 $? "$out" "pct not found"
     fi
     if [ ! -f /etc/systemd/system/btproxy-server.service ] && [ ! -f /etc/systemd/system/btproxy-client.service ]; then
         out=$(bash install.sh --pause 2>&1);    check "--pause with nothing installed dies" 1 $? "$out" "Nothing is shared"

@@ -12,9 +12,12 @@
 #   ./install.sh <host-ip>          # inside a VM: connect to this host
 #   ./install.sh --check            # is my Bluetooth chip healthy? (lists all chips)
 #   ./install.sh --status           # is the bridge working? (either side)
+#   ./install.sh --report           # print a paste-able diagnostic bundle for a bug report
 #   ./install.sh --build            # build btproxy from BlueZ source, don't use the shipped binary
 #   ./install.sh --pause            # host: take Bluetooth back temporarily
 #   ./install.sh --resume           # host: share it with the VM again
+#   ./install.sh --lxc <ctid>       # host: share host bluetoothd with an LXC container (D-Bus)
+#   ./install.sh --lxc-remove <ctid>  # host: undo the LXC share for one container
 #   ./install.sh --uninstall        # undo everything, restore normal Bluetooth
 
 set -euo pipefail
@@ -27,6 +30,14 @@ ALLOW_ANY=0
 BUILD=0
 FW_FILE=/etc/proxmox-bluetooth/firewall.nft
 ALLOW_FILE=/etc/proxmox-bluetooth/allow
+LXC_CTID=""
+# Mounted at /mnt/pbt/, NOT under /run/: the container's systemd mounts a fresh
+# tmpfs over /run at boot, which shadows anything bound there. And NOT over
+# /run/dbus/ (what most online recipes do), which would silently break every
+# D-Bus service inside the container. Binding the directory rather than the
+# socket file also survives a proxy restart recreating the socket inode.
+LXC_MOUNT='lxc.mount.entry: /run/pbt mnt/pbt none bind,ro,create=dir 0 0'
+PROXY_UNIT=/etc/systemd/system/pbt-dbus-proxy.service
 
 # SHA-256 of bin/btproxy-x86_64, pinned here on purpose. Downloading the checksum
 # next to the binary would prove nothing (whoever could swap one could swap both),
@@ -448,6 +459,20 @@ support_note() {
 EOF
 }
 
+# probe_host <ip> <port> -> open | refused | unreachable
+# The distinction drives the --status diagnosis: "refused" means the host answered
+# but nothing listens there (sharing paused or server stopped), while a silent drop
+# means host down, wrong IP, or an --allow list that does not cover this machine.
+probe_host() {
+    local out rc=0
+    # `&& rc=0 || rc=$?`: a failed probe is the interesting case, and under set -e a
+    # plain failing assignment would abort status() instead of classifying the error.
+    out=$(timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2" 2>&1) && rc=0 || rc=$?
+    if [ "$rc" = 0 ]; then echo open
+    elif grep -qi refused <<< "$out"; then echo refused
+    else echo unreachable; fi
+}
+
 status() {
     local any=0 rc=0
     if [ -f /etc/systemd/system/btproxy-server.service ]; then
@@ -460,9 +485,16 @@ status() {
             # which is the one command users are told to run when things are broken.
             lp=$(ss -tln 2>/dev/null | grep ":$PORT " | awk '{print $4}' | head -1 || true)
             if [ -n "$lp" ]; then echo "    [ok] listening on $lp"; else echo "    [!!] not listening on port $PORT"; rc=1; fi
+            if [ -f "$ALLOW_FILE" ]; then
+                echo "    [ok] port $PORT restricted to $(head -1 "$ALLOW_FILE")"
+            else
+                echo "    [--] port $PORT open to any LAN client (lock down: $(self) --allow <vm-ip>)"
+            fi
             local est; est=$(ss -tn 2>/dev/null || true)
             if grep -q ":$PORT " <<< "$est"; then
-                echo "    [ok] a VM is connected"
+                local peer
+                peer=$(grep ":$PORT " <<< "$est" | awk '{print $NF}' | cut -d: -f1 | head -1 || true)
+                echo "    [ok] a VM is connected${peer:+ ($peer)}"
             else
                 echo "    [--] no VM connected right now (client off or still retrying)"
             fi
@@ -472,9 +504,38 @@ status() {
             echo "    [!!] btproxy-server not running - journalctl -u btproxy-server"; rc=1
         fi
     fi
+    local lconf lid
+    for lconf in /etc/pve/lxc/*.conf; do
+        [ -f "$lconf" ] || continue
+        grep -qF "$LXC_MOUNT" "$lconf" || continue
+        any=1
+        lid=$(basename "$lconf" .conf)
+        say "This host SHARES its bluetoothd with LXC container $lid (D-Bus)"
+        if systemctl is-active --quiet bluetooth; then
+            echo "    [ok] host bluetoothd running"
+        else
+            echo "    [!!] host bluetoothd not running - systemctl start bluetooth"; rc=1
+        fi
+        if systemctl is-active --quiet pbt-dbus-proxy; then
+            echo "    [ok] D-Bus proxy running"
+        else
+            echo "    [!!] D-Bus proxy not running - journalctl -u pbt-dbus-proxy"; rc=1
+        fi
+        if pct status "$lid" 2>/dev/null | grep -q running; then
+            if pct exec "$lid" -- test -S /mnt/pbt/bus 2>/dev/null; then
+                echo "    [ok] socket mounted inside container $lid"
+            else
+                echo "    [!!] socket missing inside container $lid - restart it: pct stop $lid && pct start $lid"; rc=1
+            fi
+        else
+            echo "    [--] container $lid not running"
+        fi
+    done
     if [ -f /etc/systemd/system/btproxy-client.service ]; then
         any=1
-        say "This machine USES a shared Bluetooth chip (VM side)"
+        local hip
+        hip=$(grep -oE ' -c [0-9.]+' /etc/systemd/system/btproxy-client.service | awk '{print $2}' | head -1 || true)
+        say "This machine USES a shared Bluetooth chip (VM side${hip:+, host $hip})"
         if systemctl is-active --quiet btproxy-client; then
             echo "    [ok] btproxy-client running"
         else
@@ -487,12 +548,50 @@ status() {
             echo "    [ok] adapter present and powered - Bluetooth is usable"
         elif grep -q Controller <<< "$bt_list"; then
             echo "    [!!] adapter present but not powered - try: bluetoothctl power on"; rc=1
-        else
+        elif [ -z "$hip" ]; then
             echo "    [!!] no adapter yet - server unreachable or paused (retrying every 3s)"; rc=1
+        else
+            case "$(probe_host "$hip" "$PORT")" in
+                open)
+                    echo "    [!!] no adapter, yet $hip:$PORT accepts connections - another machine may hold the chip, or the client is still handshaking. Check: journalctl -u btproxy-client"; rc=1 ;;
+                refused)
+                    echo "    [!!] $hip is up but nothing listens on port $PORT - sharing is paused or stopped there. On the host run: $(self) --resume"; rc=1 ;;
+                *)
+                    echo "    [!!] cannot reach $hip:$PORT - host down, wrong IP, or its --allow list does not include this VM's address"; rc=1 ;;
+            esac
         fi
     fi
     [ "$any" = 1 ] || die "Nothing installed on this machine (run the install first)."
     return $rc
+}
+
+report() {
+    # Everything a bug report needs, in one paste. Fenced so it drops straight into
+    # a GitHub issue. status runs in a subshell: it die()s (exits) when nothing is
+    # installed, and a report is most needed exactly then. Colors stripped for paste.
+    echo '```'
+    echo "proxmox-bluetooth report  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "kernel: $(uname -rm)"
+    echo "os:     $( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || uname -s)"
+    echo "virt:   $(systemd-detect-virt 2>/dev/null || echo unknown)"
+    echo
+    (status) 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true
+    local u
+    for u in btproxy-server btproxy-client; do
+        [ -f "/etc/systemd/system/$u.service" ] || continue
+        echo; echo "--- journalctl -u $u (last 25 lines) ---"
+        journalctl -u "$u" -n 25 --no-pager 2>/dev/null || true
+    done
+    echo; echo "--- adapters ---"
+    list_adapters 2>/dev/null || echo "(none visible)"
+    echo; echo "--- bluetoothctl list ---"
+    bluetoothctl list 2>&1 || echo "(bluetoothctl unavailable)"
+    echo; echo "--- port $PORT ---"
+    ss -tln 2>/dev/null | grep ":$PORT " || echo "(nothing listening)"
+    nft list table inet proxmox-bluetooth 2>/dev/null || echo "(no allow-list firewall table)"
+    echo '```'
+    echo
+    echo "Paste the block above into: https://github.com/lucid-fabrics/proxmox-bluetooth/issues/new"
 }
 
 pause() {
@@ -511,6 +610,110 @@ resume() {
     sleep 1
     systemctl is-active --quiet btproxy-server || die "Failed to resume. Run: journalctl -u btproxy-server"
     say "Sharing resumed. The VM reconnects by itself within a few seconds."
+}
+
+# LXC needs a different mechanism than VMs: the kernel only allows AF_BLUETOOTH
+# sockets in the initial network namespace (bt_sock_create rejects every other
+# netns with EAFNOSUPPORT), so BlueZ can never run inside a container, no matter
+# how privileged. Instead the HOST runs bluetoothd and keeps the adapter, and the
+# container talks to it over D-Bus through one bind-mounted socket. That is also
+# why this mode and the VM bridge are mutually exclusive on one host: the bridge
+# works by stopping host bluetoothd and taking the chip.
+lxc_share() {
+    local ctid="$1" conf="/etc/pve/lxc/$1.conf"
+    command -v pct >/dev/null 2>&1 || die "--lxc needs a Proxmox host (pct not found)."
+    [ -f "$conf" ] || die "No LXC container $ctid on this host ($conf not found)."
+    if [ -f /etc/systemd/system/btproxy-server.service ]; then
+        die "This host shares its adapter with a VM (btproxy-server), which stops host
+  bluetoothd - and the LXC share needs bluetoothd running. Remove the VM share
+  first: $(self) --uninstall"
+    fi
+    if ! command -v bluetoothd >/dev/null 2>&1 \
+       && [ ! -x /usr/libexec/bluetooth/bluetoothd ] && [ ! -x /usr/lib/bluetooth/bluetoothd ]; then
+        say "Installing BlueZ on the host (the container will use the host's bluetoothd)..."
+        apt-get update -qq && apt-get install -y -qq bluez || die "Could not install bluez on the host."
+    fi
+    if ! command -v xdg-dbus-proxy >/dev/null 2>&1; then
+        say "Installing xdg-dbus-proxy on the host..."
+        apt-get install -y -qq xdg-dbus-proxy || die "Could not install xdg-dbus-proxy on the host."
+    fi
+    systemctl enable --now bluetooth 2>/dev/null || die "Could not start bluetooth.service on the host."
+    list_adapters >/dev/null \
+        || warn "No Bluetooth adapter visible on the host right now. The share still gets set up; plug in an adapter (or run --check) when ready."
+    # Why a proxy instead of bind-mounting the system bus socket straight in:
+    # libdbus's EXTERNAL auth sends the CLAIMED uid ("0", container root) while the
+    # host bus sees the mapped uid (100000) on the socket - mismatch, rejected. The
+    # popular socat recipe fixes that by connecting as host root, which hands the
+    # container the ENTIRE system bus. xdg-dbus-proxy (flatpak's tool, built for
+    # exactly this cross-userns case) authenticates as root too, but filters the
+    # bus down to org.bluez - the container can talk to Bluetooth and nothing else.
+    cat > "$PROXY_UNIT" <<EOF
+[Unit]
+Description=Filtered D-Bus proxy exposing org.bluez to LXC containers (proxmox-bluetooth)
+Requires=dbus.service
+After=dbus.service bluetooth.service
+Before=pve-guests.service
+
+[Service]
+RuntimeDirectory=pbt
+RuntimeDirectoryMode=0755
+UMask=0000
+ExecStart=$(command -v xdg-dbus-proxy) unix:path=/run/dbus/system_bus_socket /run/pbt/bus --filter --talk=org.bluez
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now pbt-dbus-proxy || die "Could not start the D-Bus proxy. Run: journalctl -u pbt-dbus-proxy"
+    sleep 1
+    [ -S /run/pbt/bus ] || die "The D-Bus proxy did not create /run/pbt/bus. Run: journalctl -u pbt-dbus-proxy"
+    if grep -qF "$LXC_MOUNT" "$conf"; then
+        say "Container $ctid already has the D-Bus share."
+    else
+        printf '%s\n' "$LXC_MOUNT" >> "$conf"
+        say "Added the D-Bus share to $conf"
+    fi
+    if pct status "$ctid" 2>/dev/null | grep -q running; then
+        say "Restarting container $ctid to apply the mount..."
+        pct stop "$ctid" >/dev/null && pct start "$ctid" >/dev/null \
+            || die "Could not restart container $ctid. Check: pct status $ctid"
+        sleep 2
+        if pct exec "$ctid" -- test -S /mnt/pbt/bus 2>/dev/null; then
+            say "Host D-Bus socket is visible inside container $ctid."
+        else
+            warn "Socket not visible inside the container yet - check: pct exec $ctid -- ls -l /mnt/pbt/"
+        fi
+    else
+        say "Container $ctid is stopped - the mount appears on its next start."
+    fi
+    echo
+    say "Done. Point Bluetooth apps inside container $ctid at the host's bus:"
+    echo
+    echo "  Plain apps / Home Assistant Core:"
+    echo "      export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/mnt/pbt/bus"
+    echo
+    echo "  Home Assistant (or anything) in Docker inside the container - add:"
+    echo "      -v /mnt/pbt/bus:/run/dbus/system_bus_socket:ro"
+    echo
+    echo "  Pairings live on the HOST (/var/lib/bluetooth), and the host keeps its adapter."
+    support_note
+}
+
+lxc_remove() {
+    local ctid="$1" conf="/etc/pve/lxc/$1.conf"
+    command -v pct >/dev/null 2>&1 || die "--lxc-remove needs a Proxmox host (pct not found)."
+    [ -f "$conf" ] || die "No LXC container $ctid on this host ($conf not found)."
+    grep -qF "$LXC_MOUNT" "$conf" || die "Container $ctid has no D-Bus share to remove."
+    grep -vF "$LXC_MOUNT" "$conf" > "$conf.pbt-tmp" && mv "$conf.pbt-tmp" "$conf"
+    say "Removed the D-Bus share from $conf (restart the container to drop the mount)."
+    # The proxy stays up while any other container still uses the share.
+    if ! grep -qF "$LXC_MOUNT" /etc/pve/lxc/*.conf 2>/dev/null; then
+        systemctl disable --now pbt-dbus-proxy 2>/dev/null || true
+        rm -f "$PROXY_UNIT"
+        systemctl daemon-reload
+    fi
 }
 
 uninstall() {
@@ -535,6 +738,17 @@ uninstall() {
     rm -rf /var/lib/proxmox-bluetooth
     nft delete table inet proxmox-bluetooth 2>/dev/null || true
     rm -rf /etc/proxmox-bluetooth
+    # LXC D-Bus shares: strip our mount line from every container config.
+    local c
+    for c in /etc/pve/lxc/*.conf; do
+        [ -f "$c" ] || continue
+        if grep -qF "$LXC_MOUNT" "$c"; then
+            grep -vF "$LXC_MOUNT" "$c" > "$c.pbt-tmp" && mv "$c.pbt-tmp" "$c"
+            warn "Removed D-Bus share from LXC $(basename "$c" .conf) - restart that container to drop the mount."
+        fi
+    done
+    systemctl disable --now pbt-dbus-proxy 2>/dev/null || true
+    rm -f "$PROXY_UNIT"
     rmdir /etc/systemd/system/bluetooth.service.d 2>/dev/null || true
     systemctl daemon-reload
     systemctl enable --now bluetooth 2>/dev/null || true
@@ -586,6 +800,11 @@ while [ $# -gt 0 ]; do
             ALLOW_ANY=1; shift ;;
         --build)
             BUILD=1; shift ;;
+        --lxc|--lxc-remove)
+            LXC_CTID="${2:-}"
+            [[ "$LXC_CTID" =~ ^[0-9]+$ ]] \
+                || die "$1 needs a container ID, e.g. $1 105"
+            ARGS+=("$1"); shift 2 ;;
         *) ARGS+=("$1"); shift ;;
     esac
 done
@@ -594,6 +813,9 @@ set -- "${ARGS[@]:-}"
 case "${1:-}" in
     --check)     check ;;
     --status)    status ;;
+    --report)    report ;;
+    --lxc)        lxc_share "$LXC_CTID" ;;
+    --lxc-remove) lxc_remove "$LXC_CTID" ;;
     --pause)     pause ;;
     --resume)    resume ;;
     --uninstall) uninstall ;;
