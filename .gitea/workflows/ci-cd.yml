@@ -1,0 +1,139 @@
+# proxmox-bluetooth CI/CD.
+#
+#   ci ───> cd-github-source
+#
+# Gitea is where development happens; GitHub is the public face (README badge,
+# raw.githubusercontent.com install one-liner, GitHub Releases). ci runs on every
+# push and PR here. cd-github-source only runs on push to main, after ci passes,
+# and mirrors main verbatim to GitHub over a deploy key scoped to just this repo.
+#
+# GitHub's own .github/workflows/ are left alone on purpose, not removed:
+#   - test.yml is the ONLY gate external contributors' GitHub-side PRs ever get -
+#     Gitea has no visibility into forks opened against the GitHub mirror, so
+#     dropping it would let those merge unverified. Running it again on OUR pushes
+#     too is cheap duplication, not a real cost.
+#   - verify-binary.yml is a public trust badge (rebuilds btproxy from BlueZ source
+#     and byte-compares). The point of a public reproducibility badge is that it
+#     runs on infrastructure the reader doesn't have to trust - GitHub's, not this
+#     homelab's - so it stays exactly where it is.
+#   - release.yml creates the actual GitHub Releases the install docs point at;
+#     nothing here recreates that.
+#
+# Job-level `if` uses plain comparisons only. Gitea 1.27's scheduler panics on
+# failure()/cancelled()/always() at job level - step-level `if: always()` is fine,
+# which is why the notify step uses it.
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Pinned because several steps use `set -o pipefail` and `${GITHUB_SHA:0:7}`
+# bash-only substring expansion, either of which is a syntax error under plain sh.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ci:
+    name: 'CI · shellcheck + test suite'
+    runs-on: self-hosted
+    container:
+      # Debian 12 (bookworm) on purpose: it matches the Proxmox 8 target this
+      # project ships to, same as GitHub's verify-binary.yml container.
+      image: debian:bookworm
+    steps:
+      # Bare debian:bookworm ships neither - actions/checkout shells out to git,
+      # so this has to happen before that step, not after.
+      - name: Install git (actions/checkout needs it; bare debian:bookworm lacks it)
+        run: apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null
+
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: apt-get install -y -qq shellcheck >/dev/null
+
+      - name: Run test suite
+        # No sudo: this container already runs as root, so tests/run-tests.sh's
+        # root-only CLI validation block runs unconditionally.
+        run: bash tests/run-tests.sh
+
+  cd-github-source:
+    name: 'CD · mirror main to GitHub'
+    needs: [ci]
+    if: github.event_name == 'push'
+    runs-on: self-hosted
+    container:
+      image: debian:bookworm
+    steps:
+      # Same as ci's checkout step: bare debian:bookworm has no git, and
+      # actions/checkout needs it. openssh-client goes here too, for the push below.
+      - name: Install git + ssh (actions/checkout and the push below both need them)
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git openssh-client ca-certificates >/dev/null
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push source to GitHub
+        env:
+          # An SSH deploy key scoped to this one GitHub repo (write access), not an
+          # account token - a token in an https:// remote URL is fragile (a stray
+          # newline breaks the URL and defeats Gitea's log masking) and a deploy key
+          # can't touch anything outside this repo if it ever leaked.
+          GH_DEPLOY_KEY: ${{ secrets.GH_DEPLOY_KEY }}
+          GH_REPO: lucid-fabrics/proxmox-bluetooth
+        run: |
+          set -eo pipefail
+          [ -n "$GH_DEPLOY_KEY" ] || { echo "GH_DEPLOY_KEY not set"; exit 1; }
+
+          # bin/btproxy-x86_64 is the one binary this repo intentionally ships
+          # (pinned, checksummed, verified reproducible by GitHub's own CI). Refuse
+          # to publish if any OTHER binary ever got tracked - that would be a leak,
+          # not a feature.
+          if git ls-files | grep -vxF 'bin/btproxy-x86_64' \
+             | grep -qiE '\.(exe|dylib|so|bin|dmg|pkg|zip|tar\.gz)$'; then
+            echo "Refusing to publish: an unexpected binary artifact is tracked"
+            git ls-files | grep -vxF 'bin/btproxy-x86_64' | grep -iE '\.(exe|dylib|so|bin|dmg|pkg|zip|tar\.gz)$'
+            exit 1
+          fi
+
+          # Same idea for secrets/credentials.
+          if git ls-files | grep -qE '\.(pem|key|p12|p8)$|(^|/)\.env$|id_(rsa|ed25519)$'; then
+            echo "Refusing to publish: credential-shaped files are tracked"
+            git ls-files | grep -E '\.(pem|key|p12|p8)$|(^|/)\.env$|id_(rsa|ed25519)$'
+            exit 1
+          fi
+
+          KEYDIR=$(mktemp -d)
+          trap 'rm -rf "$KEYDIR"' EXIT
+          umask 077
+          printf '%s\n' "$GH_DEPLOY_KEY" > "$KEYDIR/id_ed25519"
+          chmod 600 "$KEYDIR/id_ed25519"
+          ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$KEYDIR/known_hosts" 2>/dev/null
+
+          export GIT_SSH_COMMAND="ssh -i $KEYDIR/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=$KEYDIR/known_hosts"
+          git config user.name  "proxmox-bluetooth-ci"
+          git config user.email "ci@lucidfabrics.local"
+          git remote remove github 2>/dev/null || true
+          git remote add github "git@github.com:${GH_REPO}.git"
+          git push github "HEAD:refs/heads/main"
+          git push github --tags
+          echo "=== published $(git rev-parse --short HEAD) to github.com/${GH_REPO} ==="
+
+      - name: Notify Telegram (failures only)
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          [ -n "$TELEGRAM_BOT_TOKEN" ] || exit 0
+          MSG=$(printf '🔵 <b>proxmox-bluetooth CD -> GitHub</b> ❌\n\n🔖 <code>%s</code>\n🔗 %s' \
+            "${GITHUB_SHA:0:7}" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          curl -s --max-time 30 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&disable_web_page_preview=true" \
+            --data-urlencode "text=$MSG" || true
