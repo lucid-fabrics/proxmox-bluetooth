@@ -16,7 +16,8 @@
 
 Pair your Xbox / PlayStation controller, headphones, or sensors **inside** your gaming VM
 (ChimeraOS, Bazzite, Home Assistant, plain Linux) - even with Bluetooth chips that
-"can't be passed through".
+"can't be passed through". LXC containers are covered too, via a
+[different trick](#what-about-lxc-containers) (yes, the one the forums say is impossible).
 
 <p align="center">
   <img src="docs/img/controller-connected.jpg" alt="Xbox controller finally connected in Steam" width="600">
@@ -108,7 +109,7 @@ Full provenance, and a one-command check you can run yourself, in
 ### Two commands. That's all.
 
 <p align="center">
-  <img src="docs/img/demo.gif" alt="Real install: host shares the chip, VM gets working Bluetooth" width="700">
+  <img src="docs/img/demo.gif" alt="The install, both sides: host shares the chip, VM pairs an Xbox controller" width="700">
 </p>
 
 On the **Proxmox host**:
@@ -320,12 +321,15 @@ Run these on whichever machine they apply to. Under `curl | bash` append them af
 | `install.sh <host-ip>` | VM | Connect to a shared adapter |
 | `install.sh --check` | host | List adapters and flag a stuck chip |
 | `install.sh --status` | either | **Start here when something's wrong.** Shows both sides |
+| `install.sh --report` | either | Print a paste-able diagnostic bundle for a bug report |
 | `install.sh --adapter N` | host | Pick a chip when there's more than one |
 | `install.sh --allow <ip/cidr>` | host | Restrict port 9700 to one address |
 | `install.sh --allow-any` | host | Remove that restriction |
 | `install.sh --build` | either | Compile `btproxy` from BlueZ source instead of using ours |
 | `install.sh --pause` | host | Take Bluetooth back temporarily (until reboot) |
 | `install.sh --resume` | host | Hand it back to the VM |
+| `install.sh --lxc <ctid>` | host | Share host Bluetooth with an LXC container (filtered D-Bus) |
+| `install.sh --lxc-remove <ctid>` | host | Undo the LXC share for one container |
 | `install.sh --uninstall` | either | Remove everything, restore normal Bluetooth |
 
 ### When it doesn't work
@@ -340,7 +344,12 @@ Run `--status` first, it tells you which side is broken. Then:
 | Worked, then stopped after a VM reboot | `systemctl restart btproxy-server` on the host |
 | `--check` says the chip is stuck | Full power-off at the PSU switch for 15s, see the FAQ below |
 
-Still stuck? Open an issue with the output of `--status` from both machines.
+On the VM side, `--status` now probes the host itself and tells the difference between
+"sharing is paused on the host", "the host's `--allow` rule blocks this VM", and
+"wrong IP or host down" - so start there before reading logs.
+
+Still stuck? Run `--report` on both machines and open an issue with the two outputs -
+it collects status, logs, adapters and firewall state in one paste-able block.
 
 ## FAQ, in human words
 
@@ -434,9 +443,22 @@ usually don't have this problem: passing a USB dongle straight through with
 guests choke where Windows shrugs.
 
 ### What about LXC containers?
-Containers share the host's kernel, so they don't need this bridge - you can hand the
-host's Bluetooth to an LXC directly (bind the device / cgroup allow). This tool is for
-real VMs, where the guest runs its own kernel.
+Supported, and it works differently than VMs - because it has to. The kernel only
+allows Bluetooth sockets in the initial network namespace, so BlueZ can never run
+*inside* a container, no matter how privileged (this is why every "bind the device /
+cgroup allow" forum recipe fails). Instead, the host keeps the adapter and runs
+`bluetoothd`, and the container talks to it through a filtered D-Bus proxy that
+exposes `org.bluez` and nothing else:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lucid-fabrics/proxmox-bluetooth/main/install.sh | sudo bash -s -- --lxc <ctid>
+```
+
+Works for privileged and unprivileged containers. It prints the one line to add to
+your app (an env var, or a `-v` mount for Docker/Home Assistant inside the container).
+Ideal for Home Assistant BLE sensors; pairings live on the host in `/var/lib/bluetooth`.
+Note: a host either bridges its adapter to a VM or shares it with containers, not both
+at once - the VM bridge works precisely by stopping host `bluetoothd`.
 
 ### Is this Proxmox only?
 No - any Linux host with KVM VMs (or even two separate machines). Proxmox is just where
